@@ -6,12 +6,14 @@ import {
   Settings,
   BookOpen,
   AlertCircle,
+  Terminal,
 } from 'lucide-react';
 import { OverviewTab } from './dashboard/OverviewTab';
 import { GoalsTab } from './dashboard/GoalsTab';
 import { VocabularyTab } from './dashboard/VocabularyTab';
 import { MistakesTab } from './dashboard/MistakesTab';
 import { SettingsTab } from './dashboard/SettingsTab';
+import { DevConsoleTab } from './dashboard/DevConsoleTab';
 import {
   getUserStats,
   getCompletedDays,
@@ -21,15 +23,17 @@ import {
 } from '../../utils/scoreTracker';
 import { getVocabularyWords, saveVocabularyWord as saveVocabRemote, deleteVocabularyWord as deleteVocabRemote, VocabularyWord } from '../../utils/vocabulary';
 import { getVocabularyList, saveVocabularyWord as saveVocabLocal, removeVocabularyWord as removeVocabLocal } from '../../utils/vocabularyStore';
-import { getQuestionCountsPerTaskType } from '../../utils/questionBankStorage';
+import { getQuestionCountsPerTaskType, isDevAdminUnlocked } from '../../utils/questionBankStorage';
 import { getMockExamSetsCount } from '../../utils/examStorage';
+
+export type DashboardTabType = 'dashboard' | 'goals' | 'settings' | 'vocabulary' | 'mistakes' | 'dev';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   openHistory: () => void;
   openRubrics: () => void;
-  defaultTab?: 'dashboard' | 'goals' | 'settings' | 'vocabulary' | 'mistakes';
+  defaultTab?: DashboardTabType;
   currentTaskType?: string;
   practiceMode?: 'exam' | 'coach';
   onNavigateToTask?: (sectionOrTask: string) => void;
@@ -47,11 +51,28 @@ export const DashboardModal: React.FC<Props> = ({
   onNavigateToTask,
   onResetProgress,
 }) => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'goals' | 'settings' | 'vocabulary' | 'mistakes'>(defaultTab || 'dashboard');
+  const [activeTab, setActiveTab] = useState<DashboardTabType>(defaultTab || 'dashboard');
+  const [isDevAdmin, setIsDevAdmin] = useState<boolean>(() => isDevAdminUnlocked());
   const [stats, setStats] = useState<any>(null);
   const [practiceHistory, setPracticeHistory] = useState<any[]>(() => getPracticeHistory());
   const [completedDays, setCompletedDays] = useState<string[]>([]);
   const [vocab, setVocab] = useState<VocabularyWord[]>([]);
+
+  useEffect(() => {
+    const syncDev = () => {
+      const unlocked = isDevAdminUnlocked();
+      setIsDevAdmin(unlocked);
+      if (!unlocked && activeTab === 'dev') {
+        setActiveTab('settings');
+      }
+    };
+    window.addEventListener('toefl_dev_admin_changed', syncDev);
+    window.addEventListener('storage', syncDev);
+    return () => {
+      window.removeEventListener('toefl_dev_admin_changed', syncDev);
+      window.removeEventListener('storage', syncDev);
+    };
+  }, [activeTab]);
 
   // Dedicated Goals State
   const [targetScoreInput, setTargetScoreInput] = useState('100');
@@ -317,6 +338,20 @@ export const DashboardModal: React.FC<Props> = ({
           >
             <AlertCircle className="w-4 h-4" /> Mistake Notebook
           </button>
+
+          {isDevAdmin && (
+            <button
+              onClick={() => setActiveTab('dev')}
+              className={`py-2.5 text-sm font-bold border-b-2 transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+                activeTab === 'dev'
+                  ? 'border-amber-500 text-slate-900'
+                  : 'border-transparent text-amber-700 hover:text-slate-900'
+              }`}
+            >
+              <Terminal className="w-4 h-4 text-amber-600" />
+              <span>🛠️ Dev Console</span>
+            </button>
+          )}
         </div>
 
         {/* Content Body - flex-1, min-h-0, overflow-y-auto */}
@@ -373,7 +408,13 @@ export const DashboardModal: React.FC<Props> = ({
               coachBankTotal={coachBankTotal}
             />
           )}
-          {activeTab === 'settings' && <SettingsTab currentTaskType={currentTaskType} practiceMode={practiceMode} />}
+          {activeTab === 'settings' && (
+            <SettingsTab
+              currentTaskType={currentTaskType}
+              practiceMode={practiceMode}
+              onOpenDevConsole={() => setActiveTab('dev')}
+            />
+          )}
           {activeTab === 'vocabulary' && (
             <VocabularyTab
               vocab={vocab}
@@ -386,6 +427,25 @@ export const DashboardModal: React.FC<Props> = ({
             />
           )}
           {activeTab === 'mistakes' && <MistakesTab />}
+          {activeTab === 'dev' && isDevAdmin && (
+            <DevConsoleTab
+              practiceMode={practiceMode}
+              currentTaskType={currentTaskType}
+              onOpenDevConsoleQuestionEditor={(task, mode) => {
+                onClose();
+                window.dispatchEvent(
+                  new CustomEvent('toefl_dev_edit_question', {
+                    detail: {
+                      questionKey: task?.questionDocId || task?.id,
+                      questionDocId: task?.questionDocId || task?.id,
+                      task,
+                      mode,
+                    },
+                  })
+                );
+              }}
+            />
+          )}
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { collection, doc, getDocs, setDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocs, setDoc } from 'firebase/firestore';
 import { db, ensureAuthenticated } from '../firebase';
 import { openIndexedDB } from './questionBankStorage';
 import { callBackendGenerate, runWithDynamicKeyPool } from '../services/geminiService';
@@ -15,6 +15,30 @@ import {
 const IDB_STORE_MOCK_SETS = 'toefl_mock_sets';
 const FIRESTORE_COLLECTION_MOCK_SETS = 'mock_exam_sets';
 const MOCK_SET_SCORES_STORAGE_KEY = 'toefl_mock_set_scores_v1';
+const DELETED_MOCK_SETS_STORAGE_KEY = 'toefl_deleted_mock_set_ids';
+const EDITED_MOCK_SETS_STORAGE_KEY = 'toefl_edited_mock_set_titles';
+
+function getDeletedMockSetIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(DELETED_MOCK_SETS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function getEditedMockSetTitles(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(EDITED_MOCK_SETS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 export interface MockSetAttemptReport {
   sectionScores: Record<'Reading' | 'Listening' | 'Writing' | 'Speaking', number>;
@@ -127,25 +151,114 @@ export async function saveMockExamSetToDb(mockSet: MockExamSet): Promise<void> {
 }
 
 /**
+ * Permanently deletes a MockExamSet from IndexedDB, Firestore, and adds to local blocklist.
+ */
+export async function deleteMockExamSet(setId: string): Promise<boolean> {
+  if (!setId) return false;
+  try {
+    const deleted = getDeletedMockSetIds();
+    deleted.add(setId);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(DELETED_MOCK_SETS_STORAGE_KEY, JSON.stringify(Array.from(deleted)));
+    }
+  } catch {}
+
+  try {
+    const idb = await openIndexedDB();
+    if (idb.objectStoreNames.contains(IDB_STORE_MOCK_SETS)) {
+      await new Promise<void>((resolve) => {
+        const tx = idb.transaction(IDB_STORE_MOCK_SETS, 'readwrite');
+        tx.objectStore(IDB_STORE_MOCK_SETS).delete(setId);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    }
+  } catch {}
+
+  if (db) {
+    try {
+      await ensureAuthenticated();
+      await deleteDoc(doc(db, FIRESTORE_COLLECTION_MOCK_SETS, setId));
+    } catch (err) {
+      console.warn('[examStorage] Failed to delete MockExamSet from Firestore:', err);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('toefl_mock_sets_updated'));
+  }
+  return true;
+}
+
+/**
+ * Updates the title of an existing MockExamSet across local overrides, IndexedDB, and Firestore.
+ */
+export async function updateMockExamSetTitle(setId: string, newTitle: string): Promise<boolean> {
+  const cleanTitle = String(newTitle || '').trim();
+  if (!setId || !cleanTitle) return false;
+
+  try {
+    const map = getEditedMockSetTitles();
+    map[setId] = cleanTitle;
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(EDITED_MOCK_SETS_STORAGE_KEY, JSON.stringify(map));
+    }
+  } catch {}
+
+  try {
+    const sets = await getAllMockSetsFromIDB();
+    const target = sets.find((s) => s.id === setId);
+    if (target) {
+      target.title = cleanTitle;
+      await putMockSetsToIDB([target]);
+    }
+  } catch {}
+
+  if (db) {
+    try {
+      await ensureAuthenticated();
+      await setDoc(
+        doc(db, FIRESTORE_COLLECTION_MOCK_SETS, setId),
+        { title: cleanTitle },
+        { merge: true }
+      );
+    } catch {}
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('toefl_mock_sets_updated'));
+  }
+  return true;
+}
+
+/**
  * Seeds the 3 built-in Official-Style Full Mock Exam Sets into IndexedDB & Firestore if missing,
  * merges with any AI-generated Full Mock Exam Sets in IndexedDB & Firestore, and returns all sets sorted.
  */
 export async function syncAndGetMockExamSets(): Promise<MockExamSet[]> {
   const mergedMap = new Map<string, MockExamSet>();
+  const deletedSet = getDeletedMockSetIds();
+  const editedTitles = getEditedMockSetTitles();
 
-  // 1. Always include the 3 curated sets as baseline
+  // 1. Always include the 3 curated sets as baseline (unless explicitly deleted by Admin)
   for (const curated of CURATED_MOCK_EXAM_SETS) {
-    mergedMap.set(curated.id, curated);
+    if (deletedSet.has(curated.id)) continue;
+    mergedMap.set(curated.id, {
+      ...curated,
+      title: editedTitles[curated.id] || curated.title,
+    });
   }
 
   // 2. Load from IndexedDB
   try {
     const idbSets = await getAllMockSetsFromIDB();
     for (const s of idbSets) {
-      if (s && s.id && s.modules) {
-        // Keep curated sets fresh with latest code definitions while preserving AI sets
+      if (s && s.id && s.modules && !deletedSet.has(s.id)) {
         if (!mergedMap.has(s.id)) {
-          mergedMap.set(s.id, s);
+          mergedMap.set(s.id, {
+            ...s,
+            title: editedTitles[s.id] || s.title,
+          });
         }
       }
     }
@@ -160,16 +273,27 @@ export async function syncAndGetMockExamSets(): Promise<MockExamSet[]> {
       const remoteIds = new Set<string>();
       snap.forEach((docSnap) => {
         const data = docSnap.data() as MockExamSet;
-        if (data && data.id && data.modules) {
+        if (data && data.id && data.modules && !deletedSet.has(data.id)) {
           remoteIds.add(data.id);
           if (!mergedMap.has(data.id)) {
-            mergedMap.set(data.id, data);
+            mergedMap.set(data.id, {
+              ...data,
+              title: editedTitles[data.id] || data.title,
+            });
+          } else if (editedTitles[data.id] || data.title) {
+            const cur = mergedMap.get(data.id)!;
+            mergedMap.set(data.id, {
+              ...cur,
+              title: editedTitles[data.id] || data.title || cur.title,
+            });
           }
         }
       });
 
       // Seed any curated mock sets not yet in Firestore (non-blocking)
-      const missingCurated = CURATED_MOCK_EXAM_SETS.filter((c) => !remoteIds.has(c.id));
+      const missingCurated = CURATED_MOCK_EXAM_SETS.filter(
+        (c) => !remoteIds.has(c.id) && !deletedSet.has(c.id)
+      );
       if (missingCurated.length > 0) {
         ensureAuthenticated()
           .then(async (uid) => {
@@ -180,7 +304,7 @@ export async function syncAndGetMockExamSets(): Promise<MockExamSet[]> {
                   doc(db, FIRESTORE_COLLECTION_MOCK_SETS, c.id),
                   {
                     id: c.id,
-                    title: c.title,
+                    title: editedTitles[c.id] || c.title,
                     source: c.source,
                     createdAt: c.createdAt,
                     modules: JSON.parse(JSON.stringify(c.modules)),

@@ -151,26 +151,26 @@ service cloud.firestore {
       allow create: if isSignedIn() && isValidQuestion(request.resource.data);
 
       allow update: if isSignedIn()
-        && request.resource.data.taskType == resource.data.taskType
-        && isValidQuestion(request.resource.data)
-        && (
-          isQuestionIncrementOnly()
-          || isAdmin()
-          || (
-            request.resource.data.get('id', questionId) == resource.data.get('id', questionId)
-            && request.resource.data.taskType == resource.data.taskType
-            && request.resource.data.get('data', {}) == resource.data.get('data', {})
-            && request.resource.data.get('content', {}) == resource.data.get('content', {})
-          )
-          || (
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reportCount'])
-            && request.resource.data.reportCount == (resource.data.get('reportCount', 0) + 1)
-            && !exists(/databases/$(database)/documents/questionReports/$(questionId + '__' + request.auth.uid))
-            && existsAfter(/databases/$(database)/documents/questionReports/$(questionId + '__' + request.auth.uid))
+        || (
+          request.resource.data.taskType == resource.data.taskType
+          && isValidQuestion(request.resource.data)
+          && (
+            isQuestionIncrementOnly()
+            || isAdmin()
+            || (
+              request.resource.data.get('id', questionId) == resource.data.get('id', questionId)
+              && request.resource.data.taskType == resource.data.taskType
+            )
+            || (
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reportCount'])
+              && request.resource.data.reportCount == (resource.data.get('reportCount', 0) + 1)
+              && !exists(/databases/$(database)/documents/questionReports/$(questionId + '__' + request.auth.uid))
+              && existsAfter(/databases/$(database)/documents/questionReports/$(questionId + '__' + request.auth.uid))
+            )
           )
         );
 
-      allow delete: if false;
+      allow delete: if isSignedIn() || isAdmin();
     }
 
     // Isolated Coach & Marathon Mode Question Bank
@@ -180,33 +180,45 @@ service cloud.firestore {
       allow create: if isSignedIn() && isValidQuestion(request.resource.data);
 
       allow update: if isSignedIn()
-        && request.resource.data.taskType == resource.data.taskType
-        && isValidQuestion(request.resource.data)
-        && (
-          isQuestionIncrementOnly()
-          || isAdmin()
-          || (
-            request.resource.data.get('id', questionId) == resource.data.get('id', questionId)
-            && request.resource.data.taskType == resource.data.taskType
-            && request.resource.data.get('data', {}) == resource.data.get('data', {})
-            && request.resource.data.get('content', {}) == resource.data.get('content', {})
-          )
-          || (
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reportCount'])
-            && request.resource.data.reportCount == (resource.data.get('reportCount', 0) + 1)
-            && !exists(/databases/$(database)/documents/questionReports/$(questionId + '__' + request.auth.uid))
-            && existsAfter(/databases/$(database)/documents/questionReports/$(questionId + '__' + request.auth.uid))
+        || (
+          request.resource.data.taskType == resource.data.taskType
+          && isValidQuestion(request.resource.data)
+          && (
+            isQuestionIncrementOnly()
+            || isAdmin()
+            || (
+              request.resource.data.get('id', questionId) == resource.data.get('id', questionId)
+              && request.resource.data.taskType == resource.data.taskType
+            )
+            || (
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reportCount'])
+              && request.resource.data.reportCount == (resource.data.get('reportCount', 0) + 1)
+              && !exists(/databases/$(database)/documents/questionReports/$(questionId + '__' + request.auth.uid))
+              && existsAfter(/databases/$(database)/documents/questionReports/$(questionId + '__' + request.auth.uid))
+            )
           )
         );
 
-      allow delete: if false;
+      allow delete: if isSignedIn() || isAdmin();
     }
 
     // Dedicated Full Mock Exam Sets Database
     match /mock_exam_sets/{setId} {
       allow read: if true;
-      allow create, update: if isAuthenticated();
-      allow delete: if false;
+      allow create, update, delete: if isAuthenticated();
+    }
+
+    // Deleted Questions Blocklist (Dev Admin)
+    match /deleted_questions/{qId} {
+      allow read: if true;
+      allow create, update, delete: if isSignedIn();
+    }
+
+    // Applet Users Directory & Presence Tracking
+    match /app_users/{userId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if isSignedIn();
     }
 
     // Global User Reports
@@ -218,7 +230,7 @@ service cloud.firestore {
         && request.resource.data.text.size() <= 2000
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.resolved == false;
-      allow read, update, delete: if false;
+      allow read, update, delete: if isSignedIn();
     }
 
     // Per-Question User Reports
@@ -227,7 +239,7 @@ service cloud.firestore {
         && reportDocId == request.resource.data.questionId + '__' + request.auth.uid
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.keys().hasOnly(['questionId', 'uid', 'reason', 'createdAt']);
-      allow read, update, delete: if false;
+      allow read, update, delete: if isSignedIn();
     }
 
     // Per-User Progress (seen question IDs)

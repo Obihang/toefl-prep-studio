@@ -14,6 +14,7 @@ import {
   getDoc,
   setDoc,
   updateDoc,
+  deleteDoc,
   query,
   where,
   limit,
@@ -25,6 +26,7 @@ import {
   writeBatch,
   DocumentSnapshot,
 } from 'firebase/firestore';
+import { getPracticeHistory, getCompletedQuestionIds } from './scoreTracker';
 import { getAuthHeaders, getScholarUsername, getApiHeaders } from './apiKey';
 import { parseDialogueLine, DialogueVoiceManager } from './voices';
 import { stripSpeakerAndFormatting } from './audioSpeech';
@@ -460,6 +462,79 @@ export function getMemoryCacheForMode(mode: 'exam' | 'coach' = 'exam'): Record<s
   return mode === 'coach' ? coachMemoryCache : curatedMemoryCache;
 }
 
+export const DELETED_QUESTIONS_STORAGE_KEY = 'toefl_deleted_question_ids';
+export const EDITED_QUESTIONS_STORAGE_KEY = 'toefl_edited_questions_v1';
+
+export function getDeletedQuestionIds(): Set<string> {
+  if (typeof localStorage === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(DELETED_QUESTIONS_STORAGE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function addDeletedQuestionIdLocal(id: string, sig?: string): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const set = getDeletedQuestionIds();
+    if (id) set.add(String(id));
+    if (sig) set.add(String(sig));
+    localStorage.setItem(DELETED_QUESTIONS_STORAGE_KEY, JSON.stringify(Array.from(set)));
+  } catch {}
+}
+
+export function getEditedQuestionsMap(): Record<string, any> {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(EDITED_QUESTIONS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveEditedQuestionLocal(id: string, item: any): void {
+  if (typeof localStorage === 'undefined' || !id) return;
+  try {
+    const map = getEditedQuestionsMap();
+    map[String(id)] = item;
+    localStorage.setItem(EDITED_QUESTIONS_STORAGE_KEY, JSON.stringify(map));
+  } catch {}
+}
+
+export async function syncDeletedQuestionsFromFirestore(): Promise<Set<string>> {
+  const localSet = getDeletedQuestionIds();
+  try {
+    if (db) {
+      const snap = await getDocs(collection(db, 'deleted_questions'));
+      let changed = false;
+      snap.forEach((docSnap) => {
+        const d = docSnap.data();
+        if (docSnap.id && !localSet.has(docSnap.id)) {
+          localSet.add(docSnap.id);
+          changed = true;
+        }
+        if (d?.id && !localSet.has(String(d.id))) {
+          localSet.add(String(d.id));
+          changed = true;
+        }
+        if (d?.sig && !localSet.has(String(d.sig))) {
+          localSet.add(String(d.sig));
+          changed = true;
+        }
+      });
+      if (changed && typeof localStorage !== 'undefined') {
+        localStorage.setItem(DELETED_QUESTIONS_STORAGE_KEY, JSON.stringify(Array.from(localSet)));
+      }
+    }
+  } catch {}
+  return localSet;
+}
+
 /**
  * Load static curated shard for taskType from public/question-bank/<shard>.json (or COACH_CURATED_BANK when mode === 'coach')
  * and merge with any cached IndexedDB questions for that taskType and mode.
@@ -476,6 +551,8 @@ export async function loadCuratedShard(
     targetMemCache[canonicalType] = [];
   }
 
+  const deletedSet = getDeletedQuestionIds();
+  const editedMap = getEditedQuestionsMap();
   const existingList = targetMemCache[canonicalType];
   const seenSigs = new Set<string>(
     existingList.map((item) => getQuestionContentSignature(canonicalType, item))
@@ -488,8 +565,10 @@ export async function loadCuratedShard(
     if (mode === 'coach') {
       const coachItems = COACH_CURATED_BANK[canonicalType] || [];
       for (let idx = 0; idx < coachItems.length; idx++) {
-        const rawItem = coachItems[idx];
-        const qId = rawItem.id || `coach-${canonicalType}-curated-${idx + 1}`;
+        const rawBase = coachItems[idx];
+        const qId = String(rawBase.id || `coach-${canonicalType}-curated-${idx + 1}`);
+        if (deletedSet.has(qId)) continue;
+        const rawItem = editedMap[qId] ? { ...rawBase, ...editedMap[qId] } : rawBase;
         const normalizedWrapper = normalizeQuestionBankItem(rawItem, canonicalType);
         const normalizedItem = normalizedWrapper?.content || normalizedWrapper;
         if (!normalizedItem || !validateNormalizedTask(canonicalType, normalizedItem)) {
@@ -506,6 +585,7 @@ export async function loadCuratedShard(
           schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
         };
         const sig = getQuestionContentSignature(canonicalType, enriched);
+        if (deletedSet.has(sig)) continue;
         if (!seenSigs.has(sig) && !seenIds.has(qId)) {
           seenSigs.add(sig);
           seenIds.add(qId);
@@ -529,8 +609,10 @@ export async function loadCuratedShard(
             const json = await res.json();
             if (Array.isArray(json)) {
               for (let idx = 0; idx < json.length; idx++) {
-                const rawItem = json[idx];
-                const qId = rawItem.id || `${shard}-curated-${idx + 1}`;
+                const rawBase = json[idx];
+                const qId = String(rawBase.id || `${shard}-curated-${idx + 1}`);
+                if (deletedSet.has(qId)) continue;
+                const rawItem = editedMap[qId] ? { ...rawBase, ...editedMap[qId] } : rawBase;
                 const normalizedWrapper = normalizeQuestionBankItem(rawItem, canonicalType);
                 const normalizedItem = normalizedWrapper?.content || normalizedWrapper;
                 if (!normalizedItem || !validateNormalizedTask(canonicalType, normalizedItem)) {
@@ -547,6 +629,7 @@ export async function loadCuratedShard(
                   schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
                 };
                 const sig = getQuestionContentSignature(canonicalType, enriched);
+                if (deletedSet.has(sig)) continue;
                 if (!seenSigs.has(sig) && !seenIds.has(qId)) {
                   seenSigs.add(sig);
                   seenIds.add(qId);
@@ -580,7 +663,9 @@ export async function loadCuratedShard(
       const rowType = canonicalizeTaskType(row.taskType);
       if (rowType === canonicalType && row.content) {
         const qId = String(row.content.id || row.id || '');
-        const normalizedWrapper = normalizeQuestionBankItem(row.content, canonicalType);
+        if (qId && deletedSet.has(qId)) continue;
+        const rawSource = editedMap[qId] ? { ...row.content, ...editedMap[qId] } : row.content;
+        const normalizedWrapper = normalizeQuestionBankItem(rawSource, canonicalType);
         const normalizedContent = normalizedWrapper?.content || normalizedWrapper;
         if (!normalizedContent || !validateNormalizedTask(canonicalType, normalizedContent)) {
           continue;
@@ -590,12 +675,13 @@ export async function loadCuratedShard(
           id: qId || row.id,
           taskType: canonicalType,
           mode,
-          level: normalizeDifficultyLabel(row.level || row.content.level),
-          difficulty: normalizeDifficultyLabel(row.level || row.content.level),
-          topic: normalizeTopicLabel(row.topic || row.content.topic, row.content),
+          level: normalizeDifficultyLabel(rawSource.level || row.level || row.content.level),
+          difficulty: normalizeDifficultyLabel(rawSource.level || row.level || row.content.level),
+          topic: normalizeTopicLabel(rawSource.topic || row.topic || row.content.topic, rawSource),
           schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
         };
         const sig = getQuestionContentSignature(canonicalType, enriched);
+        if (deletedSet.has(sig)) continue;
         if (!seenSigs.has(sig) && (!qId || !seenIds.has(qId))) {
           seenSigs.add(sig);
           if (qId) seenIds.add(qId);
@@ -622,7 +708,13 @@ export function getFilteredBankTasks(
 ): any[] {
   const canonicalType = canonicalizeTaskType(taskType);
   const targetMemCache = getMemoryCacheForMode(mode);
-  const all = targetMemCache[canonicalType] || [];
+  const deletedSet = getDeletedQuestionIds();
+  const all = (targetMemCache[canonicalType] || []).filter((t) => {
+    const id = String(t?.id || t?.questionDocId || '');
+    if (id && deletedSet.has(id)) return false;
+    const sig = getQuestionContentSignature(canonicalType, t);
+    return !deletedSet.has(sig);
+  });
   if (all.length === 0) return [];
 
   return all.filter(
@@ -642,7 +734,13 @@ export function getLoadedCuratedTasks(
 ): any[] {
   const canonicalType = canonicalizeTaskType(taskType);
   const targetMemCache = getMemoryCacheForMode(mode);
-  const all = targetMemCache[canonicalType] || [];
+  const deletedSet = getDeletedQuestionIds();
+  const all = (targetMemCache[canonicalType] || []).filter((t) => {
+    const id = String(t?.id || t?.questionDocId || '');
+    if (id && deletedSet.has(id)) return false;
+    const sig = getQuestionContentSignature(canonicalType, t);
+    return !deletedSet.has(sig);
+  });
   if (all.length === 0) return [];
 
   // Tier 1: Exact level + topic match
@@ -683,6 +781,8 @@ export async function syncCuratedQuestionBank(
   mode: 'exam' | 'coach' = 'exam'
 ): Promise<QuestionBankSyncResult> {
   await ensurePurged2026V2();
+  const deletedSet = await syncDeletedQuestionsFromFirestore();
+  const editedMap = getEditedQuestionsMap();
   const counts: Record<string, number> = {};
   const tempCache: Record<string, any[]> = {};
   for (const tId of CANONICAL_TASK_IDS) {
@@ -712,13 +812,15 @@ export async function syncCuratedQuestionBank(
     for (const canonicalType of CANONICAL_TASK_IDS) {
       const coachItems = COACH_CURATED_BANK[canonicalType] || [];
       for (let idx = 0; idx < coachItems.length; idx++) {
-        const rawItem = coachItems[idx];
+        const rawBase = coachItems[idx];
+        const qId = String(rawBase.id || `coach-${canonicalType}-curated-${idx + 1}`);
+        if (deletedSet.has(qId)) continue;
+        const rawItem = editedMap[qId] ? { ...rawBase, ...editedMap[qId] } : rawBase;
         const normalizedWrapper = normalizeQuestionBankItem(rawItem, canonicalType);
         const item = normalizedWrapper?.content || normalizedWrapper;
         if (!item || !validateNormalizedTask(canonicalType, item)) {
           continue;
         }
-        const qId = String(rawItem.id || item.id || `coach-${canonicalType}-curated-${idx + 1}`);
         const validLevel = normalizeDifficultyLabel(
           rawItem.level || rawItem.difficulty || item.level
         );
@@ -738,7 +840,7 @@ export async function syncCuratedQuestionBank(
         };
 
         const sig = getQuestionContentSignature(canonicalType, enrichedContent);
-        if (seenSignatures.has(sig) || seenIds.has(qId)) {
+        if (deletedSet.has(sig) || seenSignatures.has(sig) || seenIds.has(qId)) {
           continue;
         }
         seenSignatures.add(sig);
@@ -779,13 +881,15 @@ export async function syncCuratedQuestionBank(
           const json = await res.json();
           if (Array.isArray(json)) {
             for (let idx = 0; idx < json.length; idx++) {
-              const rawItem = json[idx];
+              const rawBase = json[idx];
+              const qId = String(rawBase.id || `${shard}-curated-${idx + 1}`);
+              if (deletedSet.has(qId)) continue;
+              const rawItem = editedMap[qId] ? { ...rawBase, ...editedMap[qId] } : rawBase;
               const normalizedWrapper = normalizeQuestionBankItem(rawItem, canonicalType);
               const item = normalizedWrapper?.content || normalizedWrapper;
               if (!item || !validateNormalizedTask(canonicalType, item)) {
                 continue;
               }
-              const qId = String(rawItem.id || item.id || `${shard}-curated-${idx + 1}`);
               const validLevel = normalizeDifficultyLabel(
                 rawItem.level || rawItem.difficulty || item.level
               );
@@ -805,7 +909,7 @@ export async function syncCuratedQuestionBank(
               };
 
               const sig = getQuestionContentSignature(canonicalType, enrichedContent);
-              if (seenSignatures.has(sig) || seenIds.has(qId)) {
+              if (deletedSet.has(sig) || seenSignatures.has(sig) || seenIds.has(qId)) {
                 continue;
               }
               seenSignatures.add(sig);
@@ -844,14 +948,19 @@ export async function syncCuratedQuestionBank(
       if (!qSnap.empty) {
         qSnap.forEach((docSnap) => {
           const rawDoc = docSnap.data();
+          if (rawDoc.deleted === true) return;
           if ((rawDoc.reportCount || 0) >= 3) return;
           const docSchema = rawDoc.schemaVersion ?? rawDoc.content?.schemaVersion;
           if (docSchema !== CURRENT_BANK_SCHEMA_VERSION) return;
 
+          const qId = String(docSnap.id);
+          if (deletedSet.has(qId)) return;
+
           const targetTaskType = canonicalizeTaskType(
             rawDoc.taskType || rawDoc.type || 'academic-discussion'
           );
-          const normalizedWrapper = normalizeQuestionBankItem(rawDoc, targetTaskType);
+          const mergedDoc = editedMap[qId] ? { ...rawDoc, content: { ...(rawDoc.content || rawDoc), ...editedMap[qId] } } : rawDoc;
+          const normalizedWrapper = normalizeQuestionBankItem(mergedDoc, targetTaskType);
           const contentToCheck = normalizedWrapper?.content || normalizedWrapper;
 
           if (
@@ -861,13 +970,13 @@ export async function syncCuratedQuestionBank(
             validateNormalizedTask(targetTaskType, contentToCheck) &&
             isHighQualityTask(contentToCheck, targetTaskType)
           ) {
-            const qId = String(docSnap.id);
             const innerId = String(contentToCheck.id || '');
+            if (innerId && deletedSet.has(innerId)) return;
             const validLevel = normalizeDifficultyLabel(
-              rawDoc.level || contentToCheck.level
+              mergedDoc.level || contentToCheck.level
             );
             const validTopic = normalizeTopicLabel(
-              rawDoc.topic || contentToCheck.topic,
+              mergedDoc.topic || contentToCheck.topic,
               contentToCheck
             );
 
@@ -885,6 +994,7 @@ export async function syncCuratedQuestionBank(
 
             const sig = getQuestionContentSignature(targetTaskType, enrichedContent);
             if (
+              deletedSet.has(sig) ||
               seenSignatures.has(sig) ||
               seenIds.has(qId) ||
               (innerId && seenIds.has(innerId))
@@ -936,7 +1046,10 @@ export async function syncCuratedQuestionBank(
       if (rowSchema !== CURRENT_BANK_SCHEMA_VERSION) continue;
       const rowType = canonicalizeTaskType(row.taskType);
       const rawRowContent = row.content || row;
-      const normalizedWrapper = normalizeQuestionBankItem(rawRowContent, rowType);
+      const qId = String(row.id || rawRowContent.id || '');
+      if (qId && deletedSet.has(qId)) continue;
+      const effectiveRaw = editedMap[qId] ? { ...rawRowContent, ...editedMap[qId] } : rawRowContent;
+      const normalizedWrapper = normalizeQuestionBankItem(effectiveRaw, rowType);
       const rowContent = normalizedWrapper?.content || normalizedWrapper;
       if (
         rowType &&
@@ -945,9 +1058,8 @@ export async function syncCuratedQuestionBank(
         validateNormalizedTask(rowType, rowContent) &&
         isHighQualityTask(rowContent, rowType)
       ) {
-        const qId = String(row.id || rowContent.id || '');
-        const validLevel = normalizeDifficultyLabel(row.level || rowContent.level);
-        const validTopic = normalizeTopicLabel(row.topic || rowContent.topic, rowContent);
+        const validLevel = normalizeDifficultyLabel(effectiveRaw.level || row.level || rowContent.level);
+        const validTopic = normalizeTopicLabel(effectiveRaw.topic || row.topic || rowContent.topic, rowContent);
         const enrichedContent = {
           ...rowContent,
           id: rowContent.id || qId,
@@ -959,6 +1071,7 @@ export async function syncCuratedQuestionBank(
           schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
         };
         const sig = getQuestionContentSignature(rowType, enrichedContent);
+        if (deletedSet.has(sig)) continue;
         if (!seenSignatures.has(sig) && (!qId || !seenIds.has(qId))) {
           seenSignatures.add(sig);
           if (qId) seenIds.add(qId);
@@ -1228,6 +1341,7 @@ export async function getQuestionBankStats(
     });
 
     if (all.length > 0) {
+      const deletedSet = getDeletedQuestionIds();
       const seenSigs = new Set<string>();
       const seenIds = new Set<string>();
       let curatedTotal = 0;
@@ -1239,8 +1353,9 @@ export async function getQuestionBankStats(
         const contentObj = item.content || item;
         if (tType && counts[tType] !== undefined && contentObj) {
           const qId = String(item.id || contentObj.id || '');
+          if (qId && deletedSet.has(qId)) continue;
           const sig = getQuestionContentSignature(tType, contentObj);
-          if (seenSigs.has(sig) || (qId && seenIds.has(qId))) {
+          if (deletedSet.has(sig) || seenSigs.has(sig) || (qId && seenIds.has(qId))) {
             continue;
           }
           seenSigs.add(sig);
@@ -1855,8 +1970,11 @@ export async function fetchUnseenQuestion(
       const snapshot = await getDocs(q);
       if (snapshot.empty) continue;
 
+      const deletedSet = getDeletedQuestionIds();
       for (const docSnap of snapshot.docs) {
+        if (deletedSet.has(docSnap.id)) continue;
         const data = docSnap.data();
+        if (data.deleted === true) continue;
 
         // 0. Skip legacy pre-schemaVersion documents
         const docSchema = data.schemaVersion ?? data.content?.schemaVersion;
@@ -2410,3 +2528,719 @@ export function saveSharedQuestion(params: any): Promise<string> {
     audioUrl: params.audioUrl,
   }).then((id) => id || `local_${Date.now()}`);
 }
+
+// ============================================================================
+// Developer Admin Mode, Question Editing/Deletion, & User Presence Directory
+// ============================================================================
+
+export const DEV_UNLOCKED_KEY = 'toefl_dev_unlocked';
+export const DEV_PIN_KEY = 'toefl_dev_pin';
+
+export function isDevAdminUnlocked(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  return localStorage.getItem(DEV_UNLOCKED_KEY) === 'true';
+}
+
+export function isEligibleDevUsername(username?: string | null, email?: string | null): boolean {
+  if (isDevAdminUnlocked()) return true;
+  const cleanName = String(username || '')
+    .trim()
+    .replace(/^@+/, '')
+    .toLowerCase();
+  if (cleanName === 'obi' || cleanName === 'obihang') return true;
+  const storedScholar = String(getScholarUsername() || '')
+    .trim()
+    .replace(/^@+/, '')
+    .toLowerCase();
+  if (storedScholar === 'obi' || storedScholar === 'obihang') return true;
+  const storedDisplay =
+    typeof localStorage !== 'undefined'
+      ? String(localStorage.getItem('toefl_display_name') || '')
+          .trim()
+          .replace(/^@+/, '')
+          .toLowerCase()
+      : '';
+  if (storedDisplay === 'obi' || storedDisplay === 'obihang') return true;
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  if (cleanEmail === 'obiehang@gmail.com' || cleanEmail.startsWith('obihang@') || cleanEmail.startsWith('obi@')) {
+    return true;
+  }
+  return false;
+}
+
+export function getDevAdminPin(): string {
+  if (typeof localStorage === 'undefined') return 'obi2026';
+  return localStorage.getItem(DEV_PIN_KEY) || 'obi2026';
+}
+
+export function setDevAdminPin(newPin: string): void {
+  if (typeof localStorage === 'undefined') return;
+  const trimmed = newPin.trim();
+  if (trimmed) {
+    localStorage.setItem(DEV_PIN_KEY, trimmed);
+  }
+}
+
+export function unlockDevAdmin(pinInput: string, userEmail?: string | null): boolean {
+  const expectedPin = getDevAdminPin();
+  const cleanPin = String(pinInput || '').trim();
+  const cleanEmail = String(userEmail || '').trim().toLowerCase();
+  if (
+    cleanPin === expectedPin ||
+    cleanPin === 'obi2026' ||
+    cleanEmail === 'obiehang@gmail.com'
+  ) {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(DEV_UNLOCKED_KEY, 'true');
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('toefl_dev_admin_changed', { detail: { unlocked: true } }));
+    }
+    return true;
+  }
+  return false;
+}
+
+export function lockDevAdmin(): void {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem(DEV_UNLOCKED_KEY);
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('toefl_dev_admin_changed', { detail: { unlocked: false } }));
+  }
+}
+
+/**
+ * Permanently deletes a question from in-memory cache, local IndexedDB, and Firestore,
+ * and adds its ID & content signature to the persistent deleted blocklist so even static
+ * shard questions never reappear after reload or resync.
+ */
+export async function deleteQuestionFromBank(
+  questionId: string,
+  mode: 'exam' | 'coach' = 'exam',
+  taskObj?: any
+): Promise<boolean> {
+  const cleanId = String(questionId || taskObj?.questionDocId || taskObj?.id || '').trim();
+  if (!cleanId && !taskObj) return false;
+
+  const targetMemCache = getMemoryCacheForMode(mode);
+  let foundItem: any = taskObj || null;
+  let foundTaskType: string = taskObj?.taskType || '';
+
+  for (const tId of CANONICAL_TASK_IDS) {
+    const list = targetMemCache[tId] || [];
+    const match = list.find(
+      (item) =>
+        String(item.id || '') === cleanId ||
+        String(item.questionDocId || '') === cleanId ||
+        (taskObj?.title && item.title === taskObj.title)
+    );
+    if (match && !foundItem) {
+      foundItem = match;
+      foundTaskType = tId;
+    }
+  }
+
+  const sig =
+    foundItem && (foundTaskType || foundItem.taskType)
+      ? getQuestionContentSignature(foundTaskType || foundItem.taskType, foundItem)
+      : undefined;
+
+  addDeletedQuestionIdLocal(cleanId, sig);
+  if (foundItem?.id) addDeletedQuestionIdLocal(String(foundItem.id), sig);
+  if (foundItem?.questionDocId) addDeletedQuestionIdLocal(String(foundItem.questionDocId), sig);
+
+  // Remove from both memory caches
+  for (const cache of [curatedMemoryCache, coachMemoryCache]) {
+    for (const tId of Object.keys(cache)) {
+      cache[tId] = (cache[tId] || []).filter((item) => {
+        const iId = String(item.id || '');
+        const docId = String(item.questionDocId || '');
+        const itemSig = getQuestionContentSignature(tId, item);
+        if (cleanId && (iId === cleanId || docId === cleanId)) return false;
+        if (sig && itemSig === sig) return false;
+        return true;
+      });
+    }
+  }
+
+  // Remove from IndexedDB
+  const storeName = getIdbStoreName(mode);
+  try {
+    const dbInstance = await openIndexedDB();
+    const allRows: any[] = await new Promise((resolve) => {
+      const tx = dbInstance.transaction(storeName, 'readonly');
+      const req = tx.objectStore(storeName).getAll();
+      req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+      req.onerror = () => resolve([]);
+    });
+
+    const idsToRemove = new Set<string>();
+    if (cleanId) idsToRemove.add(cleanId);
+    for (const row of allRows) {
+      const rId = String(row.id || '');
+      const cId = String(row.content?.id || row.content?.questionDocId || '');
+      const rSig = getQuestionContentSignature(row.taskType || foundTaskType || 'academic-discussion', row.content || row);
+      if (rId === cleanId || cId === cleanId || (sig && rSig === sig)) {
+        if (rId) idsToRemove.add(rId);
+      }
+    }
+
+    if (idsToRemove.size > 0) {
+      await new Promise<void>((resolve) => {
+        const tx = dbInstance.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        idsToRemove.forEach((id) => store.delete(id));
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+        tx.onabort = () => resolve();
+      });
+    }
+  } catch (err) {
+    console.warn('Failed to delete question from IndexedDB:', err);
+  }
+
+  // Record in Firestore deleted_questions and delete/tombstone in collection
+  const collectionName = getFirestoreCollectionName(mode);
+  try {
+    await ensureAuthenticated();
+    if (db && cleanId) {
+      const safeDocId = cleanId.replace(/[\/\\#?]/g, '_');
+      await setDoc(
+        doc(db, 'deleted_questions', safeDocId),
+        {
+          id: cleanId,
+          mode,
+          sig: sig || null,
+          deletedAt: Date.now(),
+          deletedBy: getScholarUsername() || 'Obi',
+        },
+        { merge: true }
+      ).catch(() => {});
+
+      await deleteDoc(doc(db, collectionName, cleanId)).catch(async () => {
+        await setDoc(
+          doc(db, collectionName, cleanId),
+          { deleted: true, reportCount: 999 },
+          { merge: true }
+        ).catch(() => {});
+      });
+    }
+  } catch (err) {
+    console.warn('Firestore question deletion notice:', err);
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('toefl_bank_updated', {
+        detail: { mode, action: 'delete', questionId: cleanId },
+      })
+    );
+  }
+
+  return true;
+}
+
+/**
+ * Updates a question's title, difficulty/level, topic, passage/script, or questions/answer key
+ * across in-memory cache, localStorage override map, IndexedDB, and Firestore.
+ */
+export async function updateQuestionInBank(
+  questionId: string,
+  updatedItem: Partial<any>,
+  mode: 'exam' | 'coach' = 'exam'
+): Promise<any> {
+  const cleanId = String(questionId || updatedItem?.id || updatedItem?.questionDocId || '').trim();
+  const targetMemCache = getMemoryCacheForMode(mode);
+
+  let existingItem: any = null;
+  let foundType: string = canonicalizeTaskType(updatedItem?.taskType || 'academic-discussion');
+
+  for (const tId of CANONICAL_TASK_IDS) {
+    const list = targetMemCache[tId] || [];
+    const idx = list.findIndex(
+      (item) => String(item.id || '') === cleanId || String(item.questionDocId || '') === cleanId
+    );
+    if (idx !== -1) {
+      existingItem = list[idx];
+      foundType = tId;
+      break;
+    }
+  }
+
+  const canonicalType = canonicalizeTaskType(updatedItem.taskType || foundType);
+  const rawMerged = {
+    ...(existingItem || {}),
+    ...updatedItem,
+    id: cleanId || existingItem?.id || `edited_${Date.now()}`,
+    taskType: canonicalType,
+    mode,
+  };
+
+  const validLevel: Level = normalizeDifficultyLabel(
+    rawMerged.level || rawMerged.difficulty || existingItem?.level || 'intermediate'
+  );
+  const validTopic: AcademicTopic = normalizeTopicLabel(
+    rawMerged.topic || rawMerged.category || existingItem?.topic || 'science-tech',
+    rawMerged
+  );
+
+  const normalizedWrapper = normalizeQuestionBankItem(rawMerged, canonicalType);
+  const normalizedBase = normalizedWrapper?.content || normalizedWrapper || rawMerged;
+
+  const finalContent = {
+    ...normalizedBase,
+    ...updatedItem,
+    id: rawMerged.id,
+    questionDocId: rawMerged.questionDocId || rawMerged.id,
+    taskType: canonicalType,
+    mode,
+    level: validLevel,
+    difficulty: validLevel,
+    topic: validTopic,
+    schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+    updatedAt: Date.now(),
+    editedBy: getScholarUsername() || 'Obi',
+  };
+
+  // Save in localStorage override map so static shard items retain edits across reloads
+  saveEditedQuestionLocal(finalContent.id, finalContent);
+  if (cleanId && cleanId !== finalContent.id) {
+    saveEditedQuestionLocal(cleanId, finalContent);
+  }
+
+  // Update in-memory cache
+  if (!targetMemCache[canonicalType]) {
+    targetMemCache[canonicalType] = [];
+  }
+  const list = targetMemCache[canonicalType];
+  const existingIdx = list.findIndex(
+    (item) =>
+      String(item.id || '') === String(finalContent.id) ||
+      String(item.questionDocId || '') === cleanId
+  );
+  if (existingIdx !== -1) {
+    list[existingIdx] = finalContent;
+  } else {
+    list.unshift(finalContent);
+  }
+
+  // Save to IndexedDB
+  const storeName = getIdbStoreName(mode);
+  const contentHash = await computeContentHash(canonicalType, finalContent);
+  try {
+    const dbInstance = await openIndexedDB();
+    await new Promise<void>((resolve) => {
+      const tx = dbInstance.transaction(storeName, 'readwrite');
+      const store = tx.objectStore(storeName);
+      store.put({
+        id: finalContent.id,
+        taskType: canonicalType,
+        level: validLevel,
+        topic: validTopic,
+        content: finalContent,
+        contentHash,
+        mode,
+        schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+        updatedAt: Date.now(),
+      });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    });
+  } catch (err) {
+    console.warn('Failed to update question in IndexedDB:', err);
+  }
+
+  // Save to Firestore
+  const collectionName = getFirestoreCollectionName(mode);
+  try {
+    await ensureAuthenticated();
+    if (db) {
+      const docId = String(finalContent.questionDocId || finalContent.id);
+      await setDoc(
+        doc(db, collectionName, docId),
+        {
+          id: docId,
+          taskType: canonicalType,
+          level: validLevel,
+          topic: validTopic,
+          content: finalContent,
+          contentHash,
+          schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+          updatedAt: serverTimestamp(),
+          createdBy: finalContent.createdBy || auth?.currentUser?.uid || 'Obi',
+          useCount: finalContent.useCount || 0,
+        },
+        { merge: true }
+      );
+    }
+  } catch (err) {
+    console.warn('Failed to update question in Firestore:', err);
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('toefl_bank_updated', {
+        detail: { mode, action: 'update', questionId: finalContent.id, updatedItem: finalContent },
+      })
+    );
+  }
+
+  return finalContent;
+}
+
+export interface AppUserRecord {
+  id: string;
+  username: string;
+  firstSeenAt: number;
+  lastActiveAt: number;
+  questionsPracticed: number;
+  questionsGenerated: number;
+  myBestBand: number;
+}
+
+const APP_USERS_LOCAL_CACHE_KEY = 'toefl_app_users_local_map_v1';
+const AI_GENERATED_COUNT_KEY = 'toefl_ai_generated_count';
+
+export function getPersistentClientId(): string {
+  if (typeof localStorage === 'undefined') return 'server_client';
+  try {
+    if (auth?.currentUser?.uid) {
+      localStorage.setItem('toefl_client_id', auth.currentUser.uid);
+      return auth.currentUser.uid;
+    }
+  } catch {}
+  let cid = localStorage.getItem('toefl_client_id') || localStorage.getItem('local_device_id');
+  if (!cid) {
+    cid = 'user_' + Math.random().toString(36).slice(2, 10) + '_' + Date.now().toString(36);
+    localStorage.setItem('toefl_client_id', cid);
+  }
+  return cid;
+}
+
+export function incrementAiGeneratedCount(delta: number = 1): number {
+  if (typeof localStorage === 'undefined') return 0;
+  try {
+    const current = parseInt(localStorage.getItem(AI_GENERATED_COUNT_KEY) || '0', 10) || 0;
+    const next = current + delta;
+    localStorage.setItem(AI_GENERATED_COUNT_KEY, String(next));
+    syncUserActivityToFirestore().catch(() => {});
+    return next;
+  } catch {
+    return 0;
+  }
+}
+
+export async function syncUserActivityToFirestore(
+  overrides?: Partial<AppUserRecord>
+): Promise<AppUserRecord | null> {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return null;
+
+  try {
+    const clientId = getPersistentClientId();
+    const rawUsername =
+      overrides?.username ||
+      localStorage.getItem('toefl_display_name') ||
+      localStorage.getItem('toefl_username') ||
+      getScholarUsername() ||
+      `Guest_${clientId.slice(0, 5)}`;
+    const cleanUsername = String(rawUsername).trim().replace(/^@+/, '') || `Guest_${clientId.slice(0, 5)}`;
+
+    let firstSeenAt = parseInt(localStorage.getItem('toefl_first_seen_at') || '0', 10);
+    if (!firstSeenAt || isNaN(firstSeenAt)) {
+      firstSeenAt = Date.now();
+      localStorage.setItem('toefl_first_seen_at', String(firstSeenAt));
+    }
+
+    const history = getPracticeHistory();
+    const completedIds = getCompletedQuestionIds();
+    const questionsPracticed =
+      overrides?.questionsPracticed ?? Math.max(history.length, completedIds.length);
+    const questionsGenerated =
+      overrides?.questionsGenerated ??
+      (parseInt(localStorage.getItem(AI_GENERATED_COUNT_KEY) || '0', 10) || 0);
+
+    let bestBand = overrides?.myBestBand ?? 0;
+    if (!bestBand && history.length > 0) {
+      for (const rec of history) {
+        const b = Number(rec.bandScore6 || 0);
+        if (b > bestBand) bestBand = b;
+      }
+    }
+
+    const record: AppUserRecord = {
+      id: clientId,
+      username: cleanUsername,
+      firstSeenAt,
+      lastActiveAt: Date.now(),
+      questionsPracticed,
+      questionsGenerated,
+      myBestBand: Number(bestBand.toFixed(1)),
+    };
+
+    // Save to local cache map
+    try {
+      const rawMap = localStorage.getItem(APP_USERS_LOCAL_CACHE_KEY);
+      const map: Record<string, AppUserRecord> = rawMap ? JSON.parse(rawMap) : {};
+      map[clientId] = record;
+      localStorage.setItem(APP_USERS_LOCAL_CACHE_KEY, JSON.stringify(map));
+    } catch {}
+
+    await ensureAuthenticated();
+    if (db) {
+      await setDoc(doc(db, 'app_users', clientId), record, { merge: true });
+    }
+
+    return record;
+  } catch (err) {
+    console.warn('User activity sync notice:', err);
+    return null;
+  }
+}
+
+export async function fetchAllAppUsers(): Promise<AppUserRecord[]> {
+  const userMap = new Map<string, AppUserRecord>();
+
+  // 1. Seed from local cache and current user first
+  try {
+    const current = await syncUserActivityToFirestore();
+    if (current) {
+      userMap.set(current.id, current);
+    }
+    if (typeof localStorage !== 'undefined') {
+      const rawMap = localStorage.getItem(APP_USERS_LOCAL_CACHE_KEY);
+      if (rawMap) {
+        const parsed = JSON.parse(rawMap);
+        for (const [k, v] of Object.entries(parsed)) {
+          if (v && typeof v === 'object') {
+            userMap.set(k, v as AppUserRecord);
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Fetch all users from Firestore app_users collection
+  try {
+    await ensureAuthenticated();
+    if (db) {
+      const snap = await getDocs(collection(db, 'app_users'));
+      snap.forEach((docSnap) => {
+        const d = docSnap.data();
+        if (d) {
+          const id = String(d.id || docSnap.id);
+          const existing = userMap.get(id);
+          const lastActiveAt = Number(d.lastActiveAt || existing?.lastActiveAt || Date.now());
+          userMap.set(id, {
+            id,
+            username: String(d.username || existing?.username || `Guest_${id.slice(0, 5)}`).replace(/^@+/, ''),
+            firstSeenAt: Number(d.firstSeenAt || existing?.firstSeenAt || lastActiveAt),
+            lastActiveAt: Math.max(lastActiveAt, existing?.lastActiveAt || 0),
+            questionsPracticed: Math.max(Number(d.questionsPracticed || 0), existing?.questionsPracticed || 0),
+            questionsGenerated: Math.max(Number(d.questionsGenerated || 0), existing?.questionsGenerated || 0),
+            myBestBand: Math.max(Number(d.myBestBand || 0), existing?.myBestBand || 0),
+          });
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('Failed to fetch app_users from Firestore:', err);
+  }
+
+  return Array.from(userMap.values()).sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+}
+
+export interface ReportedItemRecord {
+  id: string;
+  type: 'global_report' | 'question_report';
+  questionId?: string;
+  username?: string;
+  text: string;
+  context?: string;
+  createdAt: number;
+  resolved?: boolean;
+}
+
+export async function fetchAllReportedQuestions(): Promise<ReportedItemRecord[]> {
+  const list: ReportedItemRecord[] = [];
+  try {
+    await ensureAuthenticated();
+    if (db) {
+      const [reportsSnap, qReportsSnap] = await Promise.all([
+        getDocs(collection(db, 'reports')).catch(() => null),
+        getDocs(collection(db, 'questionReports')).catch(() => null),
+      ]);
+
+      if (reportsSnap && !reportsSnap.empty) {
+        reportsSnap.forEach((d) => {
+          const data = d.data();
+          const ts = data.createdAt?.toMillis ? data.createdAt.toMillis() : Number(data.createdAt || Date.now());
+          list.push({
+            id: d.id,
+            type: 'global_report',
+            username: data.username || 'Scholar',
+            text: data.text || 'Reported issue',
+            context: data.context || '',
+            createdAt: ts,
+            resolved: Boolean(data.resolved),
+          });
+        });
+      }
+
+      if (qReportsSnap && !qReportsSnap.empty) {
+        qReportsSnap.forEach((d) => {
+          const data = d.data();
+          const ts = data.createdAt?.toMillis ? data.createdAt.toMillis() : Number(data.createdAt || Date.now());
+          list.push({
+            id: d.id,
+            type: 'question_report',
+            questionId: data.questionId || d.id.split('__')[0],
+            username: data.uid ? `UID: ${String(data.uid).slice(0, 6)}` : 'Scholar',
+            text: data.reason || 'User flagged question',
+            createdAt: ts,
+            resolved: Boolean(data.resolved),
+          });
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to fetch reports:', err);
+  }
+
+  return list.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function resolveOrDeleteReport(reportId: string, type: 'global_report' | 'question_report'): Promise<void> {
+  try {
+    await ensureAuthenticated();
+    if (db) {
+      const col = type === 'global_report' ? 'reports' : 'questionReports';
+      await deleteDoc(doc(db, col, reportId)).catch(async () => {
+        await updateDoc(doc(db, col, reportId), { resolved: true }).catch(() => {});
+      });
+    }
+  } catch {}
+}
+
+/**
+ * Exports all questions from Exam Bank, Coach Bank, and Mock Exam Sets as a formatted JSON backup string.
+ */
+export async function exportFullDatabaseBackupJson(mockSets: any[] = []): Promise<string> {
+  await getQuestionBankStats('exam');
+  await getQuestionBankStats('coach');
+
+  const examBankByTask: Record<string, any[]> = {};
+  const coachBankByTask: Record<string, any[]> = {};
+  let examTotal = 0;
+  let coachTotal = 0;
+
+  for (const tId of CANONICAL_TASK_IDS) {
+    const examList = getLoadedCuratedTasks(tId, 'all', 'all', 'exam');
+    examBankByTask[tId] = examList;
+    examTotal += examList.length;
+
+    const coachList = getLoadedCuratedTasks(tId, 'all', 'all', 'coach');
+    coachBankByTask[tId] = coachList;
+    coachTotal += coachList.length;
+  }
+
+  const payload = {
+    schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    exportedBy: getScholarUsername(),
+    summary: {
+      examBankTotal: examTotal,
+      coachBankTotal: coachTotal,
+      mockExamSetsCount: mockSets.length,
+    },
+    examBank: examBankByTask,
+    coachBank: coachBankByTask,
+    mockExamSets: mockSets,
+  };
+
+  return JSON.stringify(payload, null, 2);
+}
+
+/**
+ * Scans Exam Bank and/or Coach Bank for duplicate content signatures or normalized titles within the same taskType
+ * and removes duplicate entries from memory, IndexedDB, and Firestore.
+ */
+export async function scanAndRemoveDuplicates(
+  targetMode: 'exam' | 'coach' | 'both' = 'both'
+): Promise<{ scanned: number; removed: number }> {
+  const modes: Array<'exam' | 'coach'> =
+    targetMode === 'both' ? ['exam', 'coach'] : [targetMode];
+
+  let scanned = 0;
+  let removed = 0;
+
+  for (const mode of modes) {
+    await getQuestionBankStats(mode);
+    const memCache = getMemoryCacheForMode(mode);
+
+    for (const tId of CANONICAL_TASK_IDS) {
+      const list = memCache[tId] || [];
+      const seenSigs = new Set<string>();
+      const seenTitles = new Set<string>();
+      const uniqueList: any[] = [];
+      const duplicatesToRemove: any[] = [];
+
+      for (const item of list) {
+        scanned++;
+        const sig = getQuestionContentSignature(tId, item);
+        const rawTitle = String(
+          item.title ||
+            item.passage?.slice(0, 80) ||
+            item.text?.slice(0, 80) ||
+            item.script?.slice(0, 80) ||
+            ''
+        )
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, ' ');
+
+        const titleKey = rawTitle.length >= 12 ? `${tId}::title::${rawTitle}` : '';
+
+        if (seenSigs.has(sig) || (titleKey && seenTitles.has(titleKey))) {
+          duplicatesToRemove.push(item);
+        } else {
+          seenSigs.add(sig);
+          if (titleKey) seenTitles.add(titleKey);
+          uniqueList.push(item);
+        }
+      }
+
+      if (duplicatesToRemove.length > 0) {
+        memCache[tId] = uniqueList;
+        for (const dup of duplicatesToRemove) {
+          removed++;
+          const dupId = String(dup.questionDocId || dup.id || '');
+          if (dupId) {
+            try {
+              const dbInstance = await openIndexedDB();
+              const storeName = getIdbStoreName(mode);
+              const tx = dbInstance.transaction(storeName, 'readwrite');
+              tx.objectStore(storeName).delete(dupId);
+            } catch {}
+            if (db) {
+              try {
+                await ensureAuthenticated();
+                const colName = getFirestoreCollectionName(mode);
+                await deleteDoc(doc(db, colName, dupId));
+              } catch {}
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (removed > 0 && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('toefl_bank_updated'));
+  }
+
+  return { scanned, removed };
+}
+
+

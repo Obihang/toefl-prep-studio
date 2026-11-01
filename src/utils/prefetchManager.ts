@@ -206,8 +206,9 @@ export function getNextTaskToPrefetch(
 
 export function hasReadyTask(queue: PrefetchQueue, taskType: string, level?: string, topic?: string): boolean {
   const items = queue[taskType] || [];
-  if (level && topic) {
-    return items.some((item) => item.level === level && item.topic === topic);
+  if (items.length === 0) return false;
+  if (level && level !== 'all' && topic && topic !== 'all') {
+    return items.some((item) => item.level === level && item.topic === topic) || items.length > 0;
   }
   return items.length > 0;
 }
@@ -222,16 +223,16 @@ export function popPrefetchedTask(
   const items = queue[taskType] || [];
   if (items.length === 0) return { item: null, updatedQueue: queue };
 
-  const matching = items.filter((item) => item.level === level && item.topic === topic);
   const updatedQueue = { ...queue };
+  const matchIdx = items.findIndex(
+    (item) =>
+      (!level || level === 'all' || item.level === level) &&
+      (!topic || topic === 'all' || item.topic === topic)
+  );
+  const pickIdx = matchIdx !== -1 ? matchIdx : 0;
+  const item = items[pickIdx];
+  const remaining = items.filter((_, idx) => idx !== pickIdx);
 
-  if (matching.length === 0) {
-    delete updatedQueue[taskType];
-    savePrefetchQueueToStorage(updatedQueue, mode);
-    return { item: null, updatedQueue };
-  }
-
-  const [item, ...remaining] = matching;
   if (remaining.length > 0) {
     updatedQueue[taskType] = remaining;
   } else {
@@ -240,3 +241,4 @@ export function popPrefetchedTask(
   savePrefetchQueueToStorage(updatedQueue, mode);
   return { item, updatedQueue };
 }
+

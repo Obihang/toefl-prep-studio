@@ -19,7 +19,30 @@ import { normalizeTaskData } from '../utils/taskNormalizer';
 // Runtime Health & Load State per Provider
 const inFlightCount: Record<string, number> = {};
 const cooldownUntil: Record<string, number> = {};
+const requestsServedCount: Record<string, number> = {};
 let roundRobinCounter = 0;
+
+export interface ProviderPoolStatusItem {
+  provider: string;
+  name: string;
+  configured: boolean;
+  maskedKey: string;
+  state: 'Idle' | 'Busy' | 'Cooldown' | 'Unconfigured';
+  inFlightCount: number;
+  remainingCooldownSeconds: number;
+  requestsServed: number;
+}
+
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  gemini: 'Google Gemini',
+  groq: 'Groq LPU',
+  openrouter: 'OpenRouter',
+  nvidia: 'NVIDIA NIM',
+  openai: 'OpenAI',
+  deepseek: 'DeepSeek',
+  xai: 'xAI Grok',
+  anthropic: 'Anthropic Claude',
+};
 
 export function getInFlightCount(provider: string): number {
   return inFlightCount[provider] || 0;
@@ -31,6 +54,68 @@ export function getCooldownUntil(provider: string): number {
 
 export function markProviderCooldown(provider: string, durationMs: number): void {
   cooldownUntil[provider] = Date.now() + durationMs;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
+  }
+}
+
+export function resetAllProviderCooldowns(): void {
+  for (const key of Object.keys(cooldownUntil)) {
+    cooldownUntil[key] = 0;
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
+  }
+}
+
+export function getProviderPoolStatus(): ProviderPoolStatusItem[] {
+  const allProviders = [
+    'gemini',
+    'groq',
+    'openrouter',
+    'nvidia',
+    'openai',
+    'deepseek',
+    'xai',
+    'anthropic',
+  ];
+  const keysMap = getAllProviderKeys();
+  const now = Date.now();
+
+  return allProviders.map((p) => {
+    const rawKey = (keysMap[p] || getStoredApiKey(p as ApiProvider) || '').trim();
+    const configured = Boolean(rawKey);
+    const maskedKey = configured
+      ? rawKey.length > 10
+        ? `${rawKey.slice(0, 5)}•••${rawKey.slice(-4)}`
+        : '••••••'
+      : 'Not set';
+    const inFlight = inFlightCount[p] || 0;
+    const until = cooldownUntil[p] || 0;
+    const remainingCooldownSeconds = configured && until > now ? Math.ceil((until - now) / 1000) : 0;
+
+    let state: 'Idle' | 'Busy' | 'Cooldown' | 'Unconfigured' = 'Unconfigured';
+    if (configured) {
+      if (remainingCooldownSeconds > 0) {
+        state = 'Cooldown';
+      } else if (inFlight > 0) {
+        state = 'Busy';
+      } else {
+        state = 'Idle';
+      }
+    }
+
+    return {
+      provider: p,
+      name: PROVIDER_DISPLAY_NAMES[p] || p.toUpperCase(),
+      configured,
+      maskedKey,
+      state,
+      inFlightCount: inFlight,
+      remainingCooldownSeconds,
+      requestsServed: requestsServedCount[p] || 0,
+    };
+  });
 }
 
 export function getHealthyProviderCount(): number {
@@ -128,11 +213,15 @@ export async function executeWithFallback<T>(
     if (primaryKey) {
       const prov = (preferred && preferred !== 'auto' && preferred !== 'custom' ? preferred : 'gemini') as ModelProvider;
       inFlightCount[prov] = (inFlightCount[prov] || 0) + 1;
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
       try {
         const models = GENERATION_MODELS[prov] || ['gemini-2.5-flash'];
-        return await operation(prov, models[0], primaryKey);
+        const res = await operation(prov, models[0], primaryKey);
+        requestsServedCount[prov] = (requestsServedCount[prov] || 0) + 1;
+        return res;
       } finally {
         inFlightCount[prov] = Math.max(0, (inFlightCount[prov] || 1) - 1);
+        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
       }
     }
     throw new Error('No API key is configured.');
@@ -186,12 +275,14 @@ export async function executeWithFallback<T>(
         : EVALUATION_MODELS[provider] || GENERATION_MODELS[provider] || [];
 
     inFlightCount[provider] = (inFlightCount[provider] || 0) + 1;
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
 
     try {
       for (const model of models) {
         try {
           const res = await operation(provider, model, apiKey);
           cooldownUntil[provider] = 0;
+          requestsServedCount[provider] = (requestsServedCount[provider] || 0) + 1;
           return res;
         } catch (err: any) {
           lastError = err;
@@ -223,6 +314,7 @@ export async function executeWithFallback<T>(
       }
     } finally {
       inFlightCount[provider] = Math.max(0, (inFlightCount[provider] || 1) - 1);
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
     }
   }
 

@@ -81,7 +81,12 @@ import {
   loadCuratedShard,
   saveVerifiedQuestion,
   saveQuestionToSharedBank,
+  isDevAdminUnlocked,
+  deleteQuestionFromBank,
+  syncUserActivityToFirestore,
+  incrementAiGeneratedCount,
 } from './utils/questionBankStorage';
+import { DevQuestionEditorModal } from './components/modals/DevQuestionEditorModal';
 
 
 import {
@@ -199,6 +204,7 @@ export default function App() {
     const syncCompleted = () => {
       setCompletedQuestionIds(getCompletedQuestionIds());
       setScoreHistory(getPracticeHistory());
+      syncUserActivityToFirestore().catch(() => {});
     };
     const syncMistakes = () => {
       setMistakeNotebook(getMistakesList());
@@ -212,6 +218,13 @@ export default function App() {
       window.removeEventListener('toefl_mistakes_updated', syncMistakes);
     };
   }, []);
+
+  // Sync user activity & @username presence to Firestore app_users on load and when displayName changes
+  useEffect(() => {
+    syncUserActivityToFirestore(
+      displayName ? { username: displayName } : undefined
+    ).catch(() => {});
+  }, [displayName, user?.uid]);
 
   const handleResetAllProgress = () => {
     stopSpeaking();
@@ -328,6 +341,7 @@ export default function App() {
   const [rateLimitPauseState, setRateLimitPauseState] = useState<{ kind: 'per-minute' | 'per-day' | 'unknown'; resumeAt: number; retryAfterSeconds: number } | null>(null);
   const lastPrefetchTimeRef = useRef(0);
   const prefetchRunIdRef = useRef(0);
+  const isSectionPrefetchRunningRef = useRef(false);
   const lastHandledBatchCountRef = useRef(0);
   const lastDebugLogTimeRef = useRef<Record<string, number>>({});
   const [sharedBankNotice, setSharedBankNotice] = useState<string | null>(null);
@@ -338,6 +352,28 @@ export default function App() {
 
   const activeSection = TASK_DEFINITIONS.find((t) => t.id === currentTaskType)?.section || 'Reading';
   const isAudioSection = activeSection === 'Listening' || activeSection === 'Speaking';
+
+  const sectionTasks = React.useMemo(
+    () => TASK_DEFINITIONS.filter((t) => t.section === activeSection).map((t) => t.id),
+    [activeSection]
+  );
+  const totalInSection = sectionTasks.length;
+
+  const getPrefetchCount = React.useCallback(
+    (taskId: string, _mode: PracticeMode = practiceMode, queueOverride?: PrefetchQueue) => {
+      const q = queueOverride || prefetchedQueue;
+      const items = q[taskId] || [];
+      return items.filter(
+        (item) => matchesLevelFilter(item, level) && matchesTopicFilter(item, topic)
+      ).length;
+    },
+    [prefetchedQueue, level, topic, practiceMode]
+  );
+
+  const liveReadyCount = React.useMemo(
+    () => sectionTasks.filter((t) => getPrefetchCount(t, practiceMode) > 0).length,
+    [sectionTasks, getPrefetchCount, practiceMode]
+  );
 
   const handlePreCacheAudio = async () => {
     if (!isAudioSection || isPreCachingAudio) return;
@@ -351,12 +387,25 @@ export default function App() {
     }, 4000);
   };
 
-  // Modals
+  // Modals & Developer Admin State
   const [isRubricsOpen, setIsRubricsOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
-  const [dashboardDefaultTab, setDashboardDefaultTab] = useState<'dashboard' | 'goals' | 'settings' | 'vocabulary' | 'mistakes'>('dashboard');
+  const [dashboardDefaultTab, setDashboardDefaultTab] = useState<'dashboard' | 'goals' | 'settings' | 'vocabulary' | 'mistakes' | 'dev'>('dashboard');
+  const [isDevAdmin, setIsDevAdmin] = useState<boolean>(() => isDevAdminUnlocked());
+  const [devEditorTask, setDevEditorTask] = useState<any | null>(null);
+  const [devEditorMode, setDevEditorMode] = useState<'exam' | 'coach'>('exam');
+
+  useEffect(() => {
+    const syncDevState = () => setIsDevAdmin(isDevAdminUnlocked());
+    window.addEventListener('toefl_dev_admin_changed', syncDevState);
+    window.addEventListener('storage', syncDevState);
+    return () => {
+      window.removeEventListener('toefl_dev_admin_changed', syncDevState);
+      window.removeEventListener('storage', syncDevState);
+    };
+  }, []);
 
   // Dark Mode
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -545,15 +594,16 @@ export default function App() {
     const concreteTopic = isValidAcademicTopic(topic) ? topic : 'science-tech';
 
     // 0. Serve from prefetched queue if available!
-    if (hasReadyTask(prefetchedQueue, type, concreteLevel, concreteTopic)) {
+    if (getPrefetchCount(type, practiceMode, prefetchedQueueRef.current) > 0) {
       const { item: readyTask, updatedQueue } = popPrefetchedTask(
-        prefetchedQueue,
+        prefetchedQueueRef.current,
         type,
         concreteLevel,
         concreteTopic,
         practiceMode
       );
       if (readyTask) {
+        prefetchedQueueRef.current = updatedQueue;
         setPrefetchedQueue(updatedQueue);
         setCustomTasks((prev) => ({
           ...prev,
@@ -563,6 +613,10 @@ export default function App() {
         setLastGenerationWasInstant(true);
         setGenerationSuccess(true);
         setTimeout(() => setGenerationSuccess(false), 3000);
+        // Immediately trigger background refill for the consumed task
+        setTimeout(() => {
+          runCurrentTaskPrefetch();
+        }, 50);
         saveVerifiedQuestion(
           {
             taskType: type,
@@ -694,88 +748,121 @@ export default function App() {
         handleReportQuestion(String(docId));
       }
     };
+
+    const onDevEditEvent = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      const targetTask = detail?.task || activeTask;
+      if (targetTask) {
+        setDevEditorMode(detail?.mode || practiceMode);
+        setDevEditorTask({
+          ...targetTask,
+          taskType: targetTask.taskType || currentTaskType,
+        });
+      }
+    };
+
+    const onDevDeleteEvent = async (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      const targetTask = detail?.task || activeTask;
+      const qId = String(detail?.questionDocId || detail?.questionKey || targetTask?.questionDocId || targetTask?.id || '');
+      await deleteQuestionFromBank(qId, practiceMode, targetTask);
+      const updatedStats = await getQuestionBankStats(practiceMode);
+      setBankStats(updatedStats);
+      setSharedBankNotice('🗑️ Question permanently deleted from bank.');
+      setTimeout(() => setSharedBankNotice(null), 3500);
+      handleNextQuestion(currentTaskType);
+    };
+
+    const onBankUpdated = () => {
+      getQuestionBankStats(practiceMode).then(setBankStats).catch(() => {});
+    };
+
     window.addEventListener('toefl_report_active_question', onReportEvent);
-    return () => window.removeEventListener('toefl_report_active_question', onReportEvent);
-  }, [currentTaskType, user, customTasks]);
+    window.addEventListener('toefl_dev_edit_question', onDevEditEvent);
+    window.addEventListener('toefl_dev_delete_question', onDevDeleteEvent);
+    window.addEventListener('toefl_bank_updated', onBankUpdated);
+    return () => {
+      window.removeEventListener('toefl_report_active_question', onReportEvent);
+      window.removeEventListener('toefl_dev_edit_question', onDevEditEvent);
+      window.removeEventListener('toefl_dev_delete_question', onDevDeleteEvent);
+      window.removeEventListener('toefl_bank_updated', onBankUpdated);
+    };
+  }, [currentTaskType, user, customTasks, practiceMode]);
 
-  // Smart Section-Aware Prefetch Loop:
-  // For the current activeSection, ensures every task in sectionTasks has 1 prefetched question ready.
-  useEffect(() => {
-    const runId = ++prefetchRunIdRef.current;
-    const sectionTasks = TASK_DEFINITIONS
-      .filter((t) => t.section === activeSection)
-      .map((t) => t.id);
-    const totalInSection = sectionTasks.length;
+  // Smart Section-Aware Prefetch Runner:
+  // Ensures every task in sectionTasks has at least 1 prefetched question ready,
+  // and immediately refills any consumed task when liveReadyCount < totalInSection.
+  const runCurrentTaskPrefetch = React.useCallback(
+    async (forceExtraForActiveTask: boolean = false) => {
+      if (isMockTest) return;
 
-    if (!enablePrefetching) {
-      setPrefetchProgress({
-        current: 0,
-        total: totalInSection,
-        status: 'idle',
-        taskType: currentTaskType,
-      });
-      return;
-    }
+      if (!enablePrefetching) {
+        isSectionPrefetchRunningRef.current = false;
+        setPrefetchProgress({
+          current: 0,
+          total: totalInSection,
+          status: 'idle',
+          taskType: currentTaskType,
+        });
+        return;
+      }
 
-    if (!hasAnyProviderKey()) {
-      setPrefetchProgress({
-        current: 0,
-        total: totalInSection,
-        status: 'no_key',
-        taskType: currentTaskType,
-      });
-      return;
-    }
+      if (!hasAnyProviderKey()) {
+        isSectionPrefetchRunningRef.current = false;
+        setPrefetchProgress({
+          current: 0,
+          total: totalInSection,
+          status: 'no_key',
+          taskType: currentTaskType,
+        });
+        return;
+      }
 
-    const runSectionSmartPrefetch = async () => {
+      // Avoid duplicate concurrent runs unless explicitly forced via +1 More
+      if (isSectionPrefetchRunningRef.current && !forceExtraForActiveTask) {
+        return;
+      }
+
       const concreteLevel = isValidLevel(level) ? level : 'intermediate';
       const concreteTopic = isValidAcademicTopic(topic) ? topic : 'science-tech';
       const targetMode = practiceMode;
 
-      // Check which tasks in activeSection do NOT have a prefetched question ready for level/topic
-      const currentQueue = prefetchedQueueRef.current;
-      const getPrefetchCountForTask = (tId: string) => {
-        const items = currentQueue[tId] || [];
+      const countInQueue = (tId: string) => {
+        const items = prefetchedQueueRef.current[tId] || [];
         return items.filter(
           (item) => matchesLevelFilter(item, level) && matchesTopicFilter(item, topic)
         ).length;
       };
 
-      const missingTasks = sectionTasks.filter((tId) => getPrefetchCountForTask(tId) === 0);
-
-      // Order currentTaskType (activeTask) first if it is missing
+      const missingTasks = sectionTasks.filter((tId) => countInQueue(tId) === 0);
       if (missingTasks.includes(currentTaskType)) {
         missingTasks.sort((a, b) => (a === currentTaskType ? -1 : b === currentTaskType ? 1 : 0));
       }
 
-      const isManualExtraClick = prefetchBatchCount > lastHandledBatchCountRef.current;
-      lastHandledBatchCountRef.current = prefetchBatchCount;
-
       let tasksToFetch: string[] = [];
-      let initialReadyCount = totalInSection - missingTasks.length;
-
       if (missingTasks.length > 0) {
         tasksToFetch = missingTasks;
-      } else if (isManualExtraClick) {
+      } else if (forceExtraForActiveTask) {
         tasksToFetch = [currentTaskType];
       } else {
-        if (prefetchRunIdRef.current === runId) {
-          setPrefetchProgress({
-            current: totalInSection,
-            total: totalInSection,
-            status: 'completed',
-            taskType: currentTaskType,
-          });
-        }
+        isSectionPrefetchRunningRef.current = false;
+        setPrefetchProgress({
+          current: totalInSection,
+          total: totalInSection,
+          status: 'completed',
+          taskType: currentTaskType,
+        });
         return;
       }
 
-      if (prefetchRunIdRef.current !== runId) return;
+      const runId = ++prefetchRunIdRef.current;
+      isSectionPrefetchRunningRef.current = true;
 
-      let readyCount = initialReadyCount;
+      const computeLiveReadyFromRef = () =>
+        sectionTasks.filter((tId) => countInQueue(tId) > 0).length;
 
       setPrefetchProgress({
-        current: readyCount,
+        current: computeLiveReadyFromRef(),
         total: totalInSection,
         status: 'running',
         taskType: tasksToFetch[0],
@@ -786,7 +873,7 @@ export default function App() {
           if (prefetchRunIdRef.current !== runId) return;
 
           setPrefetchProgress({
-            current: readyCount,
+            current: computeLiveReadyFromRef(),
             total: totalInSection,
             status: 'running',
             taskType: taskToFetch,
@@ -800,7 +887,7 @@ export default function App() {
               concreteTopic,
               targetMode === 'coach'
             );
-          } catch (e) {
+          } catch {
             json = null;
           }
 
@@ -817,7 +904,7 @@ export default function App() {
                 concreteTopic,
                 targetMode === 'coach'
               );
-            } catch (e) {
+            } catch {
               json = null;
             }
           }
@@ -840,10 +927,10 @@ export default function App() {
               audioUrl: itemToSave.audioUrl || null,
               audioClips: itemToSave.audioClips || null,
             });
+            incrementAiGeneratedCount(1);
 
             if (prefetchRunIdRef.current !== runId) return;
 
-            // Update standby queue for instant delivery & tab badges (⚡ 1)
             const prefetchedItem: PrefetchedItem = {
               ...itemToSave,
               level: concreteLevel,
@@ -856,77 +943,114 @@ export default function App() {
               generatedBy: userUsername,
             };
 
-            setPrefetchedQueue((prev) => {
-              const currentItems = prev[taskToFetch] || [];
-              const nextQueue: PrefetchQueue = {
-                ...prev,
-                [taskToFetch]: [...currentItems, prefetchedItem].slice(-2),
-              };
-              savePrefetchQueueToStorage(nextQueue, targetMode);
-              prefetchedQueueRef.current = nextQueue;
-              return nextQueue;
-            });
+            const prevQueue = prefetchedQueueRef.current;
+            const currentItems = prevQueue[taskToFetch] || [];
+            const nextQueue: PrefetchQueue = {
+              ...prevQueue,
+              [taskToFetch]: [...currentItems, prefetchedItem].slice(-2),
+            };
+            prefetchedQueueRef.current = nextQueue;
+            savePrefetchQueueToStorage(nextQueue, targetMode);
+            setPrefetchedQueue(nextQueue);
 
-            if (readyCount < totalInSection) {
-              readyCount++;
-            }
-
+            const updatedReady = computeLiveReadyFromRef();
             setPrefetchProgress({
-              current: readyCount,
+              current: updatedReady,
               total: totalInSection,
-              status: readyCount === totalInSection ? 'completed' : 'running',
+              status: updatedReady >= totalInSection ? 'completed' : 'running',
               taskType: taskToFetch,
             });
 
-            // Refresh bank stats live so X/Y in bank updates immediately
-            const updatedStats = await syncCuratedQuestionBank(targetMode);
-            if (prefetchRunIdRef.current === runId) {
-              setBankStats(updatedStats);
-            }
-          } else {
-            if (prefetchRunIdRef.current === runId) {
-              setPrefetchProgress({
-                current: readyCount,
-                total: totalInSection,
-                status: 'error',
-                taskType: taskToFetch,
-              });
-            }
+            syncCuratedQuestionBank(targetMode)
+              .then((updatedStats) => {
+                if (prefetchRunIdRef.current === runId) {
+                  setBankStats(updatedStats);
+                }
+              })
+              .catch(() => {});
           }
         });
 
         await runWithDynamicKeyPool(fetchJobs);
       } catch (err) {
         console.warn('Section prefetch failed:', err);
+      } finally {
         if (prefetchRunIdRef.current === runId) {
+          isSectionPrefetchRunningRef.current = false;
+          const finalReady = computeLiveReadyFromRef();
           setPrefetchProgress({
-            current: readyCount,
+            current: finalReady,
             total: totalInSection,
-            status: 'error',
+            status: finalReady >= totalInSection ? 'completed' : 'error',
             taskType: currentTaskType,
           });
         }
-      } finally {
-        if (prefetchRunIdRef.current === runId) {
-          setPrefetchProgress((prev) => {
-            if (readyCount >= totalInSection) {
-              return { ...prev, current: totalInSection, total: totalInSection, status: 'completed' };
-            }
-            if (prev.status === 'running') {
-              return { ...prev, status: 'error' };
-            }
-            return prev;
-          });
-        }
       }
-    };
+    },
+    [
+      isMockTest,
+      enablePrefetching,
+      totalInSection,
+      currentTaskType,
+      level,
+      topic,
+      practiceMode,
+      sectionTasks,
+    ]
+  );
 
-    const timer = setTimeout(runSectionSmartPrefetch, 400);
+  // Cancel any in-flight run when section, level, topic, mode, or prefetch toggle changes
+  useEffect(() => {
+    prefetchRunIdRef.current++;
+    isSectionPrefetchRunningRef.current = false;
+  }, [activeSection, level, topic, practiceMode, enablePrefetching]);
 
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [activeSection, level, topic, practiceMode, enablePrefetching, prefetchBatchCount, isMockTest]);
+  // Automatically trigger prefetch whenever any tab in the current section has 0 prefetched questions (liveReadyCount < totalInSection)
+  // or when the user clicks "+1 More" (prefetchBatchCount increments)
+  useEffect(() => {
+    const isManualExtra = prefetchBatchCount > lastHandledBatchCountRef.current;
+    if (isManualExtra) {
+      lastHandledBatchCountRef.current = prefetchBatchCount;
+      runCurrentTaskPrefetch(true);
+      return;
+    }
+
+    if (!enablePrefetching || isMockTest) {
+      return;
+    }
+
+    if (liveReadyCount < totalInSection) {
+      const delayMs = prefetchProgress.status === 'error' ? 4000 : 250;
+      const timer = setTimeout(() => {
+        runCurrentTaskPrefetch(false);
+      }, delayMs);
+      return () => clearTimeout(timer);
+    } else if (prefetchProgress.status !== 'running') {
+      setPrefetchProgress((prev) =>
+        prev.status === 'completed' && prev.current === totalInSection && prev.total === totalInSection
+          ? prev
+          : {
+              current: totalInSection,
+              total: totalInSection,
+              status: 'completed',
+              taskType: currentTaskType,
+            }
+      );
+    }
+  }, [
+    activeSection,
+    level,
+    topic,
+    practiceMode,
+    enablePrefetching,
+    prefetchBatchCount,
+    isMockTest,
+    liveReadyCount,
+    totalInSection,
+    prefetchProgress.status,
+    runCurrentTaskPrefetch,
+    currentTaskType,
+  ]);
 
   // Sync / filter queue when difficulty level or academic topic changes
   useEffect(() => {
@@ -978,15 +1102,16 @@ export default function App() {
     const concreteTopic = isValidAcademicTopic(topic) ? topic : 'science-tech';
 
     // 1. Instant delivery if pre-fetched question is ready in the queue!
-    if (hasReadyTask(prefetchedQueue, currentTaskType, concreteLevel, concreteTopic)) {
+    if (getPrefetchCount(currentTaskType, practiceMode, prefetchedQueueRef.current) > 0) {
       const { item: readyTask, updatedQueue } = popPrefetchedTask(
-        prefetchedQueue,
+        prefetchedQueueRef.current,
         currentTaskType,
         concreteLevel,
         concreteTopic,
         practiceMode
       );
       if (readyTask) {
+        prefetchedQueueRef.current = updatedQueue;
         setPrefetchedQueue(updatedQueue);
 
         // Instantly activate
@@ -1003,6 +1128,11 @@ export default function App() {
         setLastGenerationWasInstant(true);
         setGenerationSuccess(true);
         setTimeout(() => setGenerationSuccess(false), 3000);
+
+        // Immediately trigger background refill for the consumed task
+        setTimeout(() => {
+          runCurrentTaskPrefetch();
+        }, 50);
 
         saveVerifiedQuestion(
           {
@@ -1107,6 +1237,7 @@ export default function App() {
         ...prev,
         [currentTaskType]: newTask,
       }));
+      incrementAiGeneratedCount(1);
       setLastGenerationWasInstant(false);
       setGenerationSuccess(true);
       setTimeout(() => setGenerationSuccess(false), 3000);
@@ -1278,8 +1409,21 @@ export default function App() {
             </button>
           </nav>
 
-          {/* Zone 3: Right actions (Score History, Dashboard, System Status, Theme Toggle) */}
+          {/* Zone 3: Right actions (Dev Admin Badge, Score History, Dashboard, System Status, Theme Toggle) */}
           <div className="flex items-center gap-2.5 shrink-0">
+            {isDevAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDashboardDefaultTab('dev');
+                  setIsDashboardOpen(true);
+                }}
+                title="Developer Admin Mode Active — Open Dev Console"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-bold text-amber-300 bg-slate-900 hover:bg-slate-800 border border-amber-500/40 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer shadow-2xs"
+              >
+                <span>🛠️ DEV ADMIN</span>
+              </button>
+            )}
             <button
               onClick={() => setIsHistoryOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
@@ -1394,9 +1538,7 @@ export default function App() {
                       (td.id === 'reading-academic' && currentTaskType === 'reading-passage') ||
                       (td.id === 'listening-dialogue' && currentTaskType === 'listening-conversation') ||
                       (td.id === 'listening-academic-talk' && currentTaskType === 'listening-lecture'));
-                  const readyCount = (prefetchedQueue[td.id] || []).filter(
-                    (item) => matchesLevelFilter(item, level) && matchesTopicFilter(item, topic)
-                  ).length;
+                  const readyCount = getPrefetchCount(td.id, practiceMode);
                   const isReady = readyCount > 0;
                   const cleanLabel = td.name.replace(/^[RLWS]\s*[·•.]\s*/i, '').trim();
                   return (
@@ -1545,11 +1687,11 @@ export default function App() {
                           <span className="px-2.5 py-2 bg-amber-50 text-amber-800 border border-amber-200 text-xs font-medium rounded-lg whitespace-nowrap">
                             Key Required for Prefetch
                           </span>
-                        ) : prefetchProgress.status === 'running' ? (
+                        ) : prefetchProgress.status === 'running' || liveReadyCount < totalInSection ? (
                           <div className="flex items-center gap-1.5 shrink-0">
                             <span className="flex items-center gap-1.5 px-2.5 py-2 bg-teal-50 text-teal-800 border border-teal-200 text-xs font-semibold rounded-lg whitespace-nowrap">
                               <span className="animate-spin inline-block w-3 h-3 border-2 border-teal-600 border-t-transparent rounded-full"></span>
-                              <span>⏳ Prefetching {prefetchProgress.current}/{prefetchProgress.total}...</span>
+                              <span>⏳ Prefetching {liveReadyCount}/{totalInSection}...</span>
                             </span>
                             <button
                               type="button"
@@ -1563,7 +1705,7 @@ export default function App() {
                         ) : (
                           <div className="flex items-center gap-1.5 shrink-0">
                             <span className="px-2.5 py-2 bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-semibold rounded-lg flex items-center gap-1 whitespace-nowrap">
-                              <span>✅ {prefetchProgress.current}/{prefetchProgress.total} Ready</span>
+                              <span>✅ {liveReadyCount}/{totalInSection} Ready</span>
                             </span>
                             <button
                               type="button"
@@ -2108,6 +2250,28 @@ export default function App() {
       {/* Modals */}
       <RubricGuideModal isOpen={isRubricsOpen} onClose={() => setIsRubricsOpen(false)} />
       <SystemStatusModal isOpen={isStatusModalOpen} onClose={() => setIsStatusModalOpen(false)} />
+      <DevQuestionEditorModal
+        isOpen={Boolean(devEditorTask)}
+        task={devEditorTask}
+        mode={devEditorMode}
+        onClose={() => setDevEditorTask(null)}
+        onSaved={(updated) => {
+          const targetType = (updated.taskType || currentTaskType) as TaskTypeId;
+          setCustomTasks((prev) => ({
+            ...prev,
+            [targetType]: normalizeTaskData(updated, targetType),
+          }));
+          getQuestionBankStats(practiceMode).then(setBankStats).catch(() => {});
+          setSharedBankNotice('💾 Question changes saved to IndexedDB & Firestore!');
+          setTimeout(() => setSharedBankNotice(null), 3500);
+        }}
+        onDeleted={() => {
+          getQuestionBankStats(practiceMode).then(setBankStats).catch(() => {});
+          setSharedBankNotice('🗑️ Question permanently deleted from bank.');
+          setTimeout(() => setSharedBankNotice(null), 3500);
+          handleNextQuestion(currentTaskType);
+        }}
+      />
 
       <Suspense fallback={null}>
         <PerformanceHistoryModal

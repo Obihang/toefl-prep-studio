@@ -848,7 +848,7 @@ export const ListeningDialogueView: React.FC<Props> = ({
               title="Toggle transcript text"
             >
               {showTranscript ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-              {showTranscript ? 'Hide Script' : '👁️ Show Script (Study Mode)'}
+              {showTranscript ? 'Hide Script' : 'Show Script (Study Mode)'}
             </button>
           </div>
         </div>
