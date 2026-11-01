@@ -123,14 +123,11 @@ export function inferGenderFromSpeaker(speakerLabelOrName: string): 'male' | 'fe
 
 export function pickRandomVoice(
   gender?: 'male' | 'female',
-  excludeVoice?: string
+  excludeVoice?: string,
+  seed?: string
 ): { gender: 'male' | 'female'; voiceId: string } {
   const resolvedGender: 'male' | 'female' =
-    gender === 'male' || gender === 'female'
-      ? gender
-      : Math.random() < 0.5
-      ? 'male'
-      : 'female';
+    gender === 'male' || gender === 'female' ? gender : 'female';
 
   const basePool = resolvedGender === 'male' ? MALE_NEURAL_VOICES : FEMALE_NEURAL_VOICES;
   const filteredPool =
@@ -138,7 +135,16 @@ export function pickRandomVoice(
       ? basePool.filter((v) => v !== excludeVoice)
       : basePool;
 
-  const voiceId = filteredPool[Math.floor(Math.random() * filteredPool.length)] || basePool[0];
+  if (seed) {
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) {
+      hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+    }
+    const voiceId = filteredPool[hash % filteredPool.length] || basePool[0];
+    return { gender: resolvedGender, voiceId };
+  }
+
+  const voiceId = filteredPool[0] || basePool[0];
   return { gender: resolvedGender, voiceId };
 }
 
@@ -167,9 +173,10 @@ let currentDialogueSessionId = 0;
 let isAudioPlayingState = false;
 import { openDB } from 'idb';
 
-const DB_NAME = 'toefl_tts_cache_v5';
+const DB_NAME = 'toefl_tts_audio_cache';
 const DB_VERSION = 1;
-const STORE_NAME = 'audio_blobs';
+const STORE_NAME = 'toefl_tts_audio_cache';
+const MAX_IDB_AUDIO_CLIPS = 60;
 
 // Immediately purge any stale cached audio blobs containing preambles
 if (typeof window !== 'undefined' && 'indexedDB' in window) {
@@ -186,10 +193,77 @@ const dbPromise =
   typeof window !== 'undefined' && 'indexedDB' in window
     ? openDB(DB_NAME, DB_VERSION, {
         upgrade(db) {
-          db.createObjectStore(STORE_NAME);
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME);
+          }
         },
       })
     : Promise.resolve(null as any);
+
+function base64ToAudioBlob(base64: string, mimeType: string = 'audio/mpeg'): Blob {
+  const byteChars = atob(base64);
+  const bytes = new Uint8Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) {
+    bytes[i] = byteChars.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
+
+async function blobToBase64String(blob: Blob): Promise<string> {
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(i, i + chunkSize))
+    );
+  }
+  return btoa(binary);
+}
+
+async function persistAudioClipToIdb(
+  key: string,
+  entry: {
+    blob: Blob;
+    base64?: string;
+    mimeType?: string;
+    engine?: string;
+    audioUrl?: string;
+  }
+): Promise<void> {
+  try {
+    const db = await dbPromise;
+    if (!db) return;
+    await db.put(
+      STORE_NAME,
+      {
+        ...entry,
+        updatedAt: Date.now(),
+      },
+      key
+    );
+
+    // Keep only the most recent 60 audio clips in IndexedDB
+    const allKeys = await db.getAllKeys(STORE_NAME);
+    if (allKeys.length > MAX_IDB_AUDIO_CLIPS) {
+      const entriesWithTime: Array<{ key: IDBValidKey; updatedAt: number }> = [];
+      for (const k of allKeys) {
+        const val = await db.get(STORE_NAME, k);
+        entriesWithTime.push({
+          key: k,
+          updatedAt: Number(val?.updatedAt || 0),
+        });
+      }
+      entriesWithTime.sort((a, b) => a.updatedAt - b.updatedAt);
+      const toDeleteCount = entriesWithTime.length - MAX_IDB_AUDIO_CLIPS;
+      for (let i = 0; i < toDeleteCount; i++) {
+        await db.delete(STORE_NAME, entriesWithTime[i].key);
+      }
+    }
+  } catch {}
+}
 
 export function stripSpeakerAndFormatting(text: string): string {
   if (!text) return '';
@@ -225,6 +299,7 @@ export function stripSpeakerAndFormatting(text: string): string {
   return cleaned.replace(/\s+/g, ' ').trim();
 }
 
+export const audioBlobCache = new Map<string, Blob>();
 const audioBufferMemoryCache = new Map<string, AudioBuffer>();
 const inFlightTtsPromises = new Map<
   string,
@@ -308,12 +383,13 @@ export function chunkTextForTTS(
   return chunks.length > 0 ? chunks : [cleaned];
 }
 
-function getCanonicalTtsCacheKey(voiceId: string, cleanChunk: string): string {
+export function getCanonicalTtsCacheKey(voiceId: string, cleanChunk: string): string {
   return `cache_v5_${voiceId || 'default'}_${cleanChunk}`;
 }
 
 /**
  * Fetches or retrieves from memory/IndexedDB cache a single TTS chunk with a strictly locked voiceId.
+ * Checks in-memory Map (audioBufferMemoryCache & audioBlobCache) first, then IndexedDB (toefl_tts_audio_cache) second before calling /api/tts.
  */
 export async function fetchCloudTtsAudio(
   chunk: string,
@@ -337,10 +413,31 @@ export async function fetchCloudTtsAudio(
   const primaryKey = getCanonicalTtsCacheKey(lockedVoice, cleanChunk);
   const legacyKey = `cache_${provider}_${lockedVoice}_${cleanChunk}`;
 
+  // 1. Check in-memory AudioBuffer cache first
   const memHit =
     audioBufferMemoryCache.get(primaryKey) || audioBufferMemoryCache.get(legacyKey);
   if (memHit) {
     return { audioBuffer: memHit, engine: 'Cached Neural TTS' };
+  }
+
+  // 1b. Check in-memory audioBlobCache Map
+  const memBlobHit =
+    audioBlobCache.get(primaryKey) || audioBlobCache.get(legacyKey);
+  if (memBlobHit) {
+    try {
+      const b64 = await blobToBase64String(memBlobHit);
+      const { audioBuffer } = await decodeSpeech(
+        b64,
+        memBlobHit.type || 'audio/mpeg'
+      );
+      audioBufferMemoryCache.set(primaryKey, audioBuffer);
+      return {
+        audioBuffer,
+        engine: 'Cached Neural TTS (Memory Blob)',
+        base64: b64,
+        mimeType: memBlobHit.type || 'audio/mpeg',
+      };
+    } catch {}
   }
 
   const inflight = inFlightTtsPromises.get(primaryKey);
@@ -349,29 +446,49 @@ export async function fetchCloudTtsAudio(
   }
 
   const taskPromise = (async () => {
+    // 2. Check IndexedDB toefl_tts_audio_cache second before calling /api/tts
     try {
       const db = await dbPromise;
       if (db) {
         const cached =
           (await db.get(STORE_NAME, primaryKey)) ||
           (await db.get(STORE_NAME, legacyKey));
-        if (cached && cached.base64) {
-          const { audioBuffer } = await decodeSpeech(
-            cached.base64,
-            cached.mimeType || 'audio/mpeg'
-          );
-          audioBufferMemoryCache.set(primaryKey, audioBuffer);
-          return {
-            audioBuffer,
-            engine: `Cached (${cached.engine || 'Neural TTS'})`,
-            audioUrl: cached.audioUrl,
-            base64: cached.base64,
-            mimeType: cached.mimeType,
-          };
+        if (cached) {
+          let base64Str: string | undefined = cached.base64;
+          let mimeTypeStr: string = cached.mimeType || 'audio/mpeg';
+          let blobObj: Blob | undefined =
+            cached.blob instanceof Blob
+              ? cached.blob
+              : cached instanceof Blob
+              ? cached
+              : undefined;
+
+          if (!base64Str && blobObj) {
+            base64Str = await blobToBase64String(blobObj);
+            mimeTypeStr = blobObj.type || mimeTypeStr;
+          } else if (base64Str && !blobObj) {
+            blobObj = base64ToAudioBlob(base64Str, mimeTypeStr);
+          }
+
+          if (base64Str) {
+            if (blobObj) {
+              audioBlobCache.set(primaryKey, blobObj);
+            }
+            const { audioBuffer } = await decodeSpeech(base64Str, mimeTypeStr);
+            audioBufferMemoryCache.set(primaryKey, audioBuffer);
+            return {
+              audioBuffer,
+              engine: `Cached (${cached.engine || 'Neural TTS'})`,
+              audioUrl: cached.audioUrl,
+              base64: base64Str,
+              mimeType: mimeTypeStr,
+            };
+          }
         }
       }
     } catch {}
 
+    // 3. Network fallback: fetch from /api/tts and store in audioBlobCache + IndexedDB
     try {
       const authHdrs = await getAuthHeaders();
       const res = await fetch('/api/tts', {
@@ -388,32 +505,27 @@ export async function fetchCloudTtsAudio(
       if (res.ok && json.success && json.audioBase64) {
         incrementTtsQuota();
         const engineName = json.modelUsed || 'Neural TTS';
-        const { audioBuffer } = await decodeSpeech(
-          json.audioBase64,
-          json.mimeType || 'audio/mpeg'
-        );
+        const mimeType = json.mimeType || 'audio/mpeg';
+        const mp3Blob = base64ToAudioBlob(json.audioBase64, mimeType);
+        audioBlobCache.set(primaryKey, mp3Blob);
+
+        const { audioBuffer } = await decodeSpeech(json.audioBase64, mimeType);
         audioBufferMemoryCache.set(primaryKey, audioBuffer);
-        try {
-          const db = await dbPromise;
-          if (db) {
-            await db.put(
-              STORE_NAME,
-              {
-                base64: json.audioBase64,
-                mimeType: json.mimeType,
-                engine: engineName,
-                audioUrl: json.audioUrl,
-              },
-              primaryKey
-            );
-          }
-        } catch {}
+
+        await persistAudioClipToIdb(primaryKey, {
+          blob: mp3Blob,
+          base64: json.audioBase64,
+          mimeType,
+          engine: engineName,
+          audioUrl: json.audioUrl,
+        });
+
         return {
           audioBuffer,
           engine: engineName,
           audioUrl: json.audioUrl,
           base64: json.audioBase64,
-          mimeType: json.mimeType,
+          mimeType,
         };
       }
     } catch {}
@@ -850,14 +962,38 @@ export function getTtsUsageCount(): number {
 
 // Fetch Cloud Audio from /api/tts via Gemini with in-memory & IndexedDB caching
 export async function fetchAudioBlob(text: string, voiceName?: string, gender?: string): Promise<Blob> {
-  const cacheKey = `${voiceName || 'default'}:::${text}`;
+  const cleanText = stripSpeakerAndFormatting(text);
+  const lockedVoice =
+    voiceName || (gender === 'male' ? 'en-US-ChristopherNeural' : 'en-US-AriaNeural');
+  const cacheKey = getCanonicalTtsCacheKey(lockedVoice, cleanText);
+  const legacyKey = `${voiceName || 'default'}:::${text}`;
+
+  // 1. Check in-memory audioBlobCache first
+  const memBlob = audioBlobCache.get(cacheKey) || audioBlobCache.get(legacyKey);
+  if (memBlob) {
+    return memBlob;
+  }
+
+  // 2. Check IndexedDB toefl_tts_audio_cache second
   const db = await dbPromise;
-  
-  // Check cache
   if (db) {
-    const cachedBlob = await db.get(STORE_NAME, cacheKey);
-    if (cachedBlob) {
-      return cachedBlob;
+    const cached =
+      (await db.get(STORE_NAME, cacheKey)) ||
+      (await db.get(STORE_NAME, legacyKey));
+    if (cached) {
+      if (cached instanceof Blob) {
+        audioBlobCache.set(cacheKey, cached);
+        return cached;
+      }
+      if (cached.blob instanceof Blob) {
+        audioBlobCache.set(cacheKey, cached.blob);
+        return cached.blob;
+      }
+      if (cached.base64) {
+        const blob = base64ToAudioBlob(cached.base64, cached.mimeType || 'audio/mpeg');
+        audioBlobCache.set(cacheKey, blob);
+        return blob;
+      }
     }
   }
 
@@ -880,7 +1016,7 @@ export async function fetchAudioBlob(text: string, voiceName?: string, gender?: 
     res = await fetch('/api/tts', {
       method: 'POST',
       headers: { ...getApiHeaders(), ...authHdrs },
-      body: JSON.stringify({ text, voice: voiceName, voiceName, gender }),
+      body: JSON.stringify({ text: cleanText, voice: lockedVoice, voiceName: lockedVoice, gender }),
       signal: controller.signal,
     });
     json = await res.json();
@@ -908,28 +1044,17 @@ export async function fetchAudioBlob(text: string, voiceName?: string, gender?: 
     const audioRes = await fetch(json.audioUrl);
     blob = await audioRes.blob();
   } else {
-    // Decode base64 to Blob
-    const byteCharacters = atob(json.audioBase64);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    blob = new Blob([byteArray], { type: json.mimeType || 'audio/mpeg' });
+    blob = base64ToAudioBlob(json.audioBase64, json.mimeType || 'audio/mpeg');
   }
 
-  // Store in cache
-  try {
-    await db.put(STORE_NAME, blob, cacheKey);
-  } catch {}
-
-  // Simple cache eviction (limit keys)
-  try {
-    const keys = await db.getAllKeys(STORE_NAME);
-    if (keys.length > 50) {
-      await db.delete(STORE_NAME, keys[0]);
-    }
-  } catch {}
+  audioBlobCache.set(cacheKey, blob);
+  await persistAudioClipToIdb(cacheKey, {
+    blob,
+    base64: json.audioBase64,
+    mimeType: json.mimeType || 'audio/mpeg',
+    engine: json.modelUsed || 'Neural TTS',
+    audioUrl: json.audioUrl,
+  });
 
   return blob;
 }

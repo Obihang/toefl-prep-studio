@@ -71,7 +71,7 @@ import { getMistakesList, clearAllMistakes, MistakeRecord } from './utils/mistak
 import { clearAllFirestoreMistakes } from './utils/mistakes';
 import { SystemStatusModal } from './components/shared/SystemStatusModal';
 import { StudioWordmark } from './components/shared/Header';
-import { preCacheSectionAudio } from './utils/audioPrewarmer';
+import { preCacheSectionAudio, preCacheTargetQuestionsAudio } from './utils/audioPrewarmer';
 import { GlobalReportButton } from './components/shared/GlobalReportButton';
 import {
   syncCuratedQuestionBank,
@@ -391,18 +391,6 @@ export default function App() {
     () => sectionTasks.filter((t) => getPrefetchCount(t, practiceMode) > 0).length,
     [sectionTasks, getPrefetchCount, practiceMode]
   );
-
-  const handlePreCacheAudio = async () => {
-    if (!isAudioSection || isPreCachingAudio) return;
-    setIsPreCachingAudio(true);
-    setPreCacheStatus('Starting cache...');
-    await preCacheSectionAudio(activeSection, (progress) => {
-      setPreCacheStatus(progress.statusText);
-    });
-    setTimeout(() => {
-      setIsPreCachingAudio(false);
-    }, 4000);
-  };
 
   // Modals & Developer Admin State
   const [isRubricsOpen, setIsRubricsOpen] = useState(false);
@@ -1348,6 +1336,80 @@ export default function App() {
     return normalizeTaskData(task, currentTaskType);
   }, [customTasks, currentTaskType, level, topic, curatedIndices, practiceMode]);
 
+  const handlePreCacheAudio = async () => {
+    if (!isAudioSection || isPreCachingAudio) return;
+    setIsPreCachingAudio(true);
+
+    // Build target list: current active question + the next 2 unpracticed questions in the current section
+    const targets: Array<{ task: any; taskType: string }> = [];
+    const seenIdsOrTitles = new Set<string>();
+    const completedSet = new Set(completedQuestionIds);
+
+    const addTargetIfUnique = (q: any, tType: string) => {
+      if (!q || targets.length >= 3) return;
+      const key = String(q.id || q.questionDocId || q.title || '').trim();
+      if (key && seenIdsOrTitles.has(key)) return;
+      if (key) seenIdsOrTitles.add(key);
+      targets.push({ task: normalizeTaskData(q, tType), taskType: tType });
+    };
+
+    // 1. Current active question
+    if (activeTask) {
+      addTargetIfUnique(activeTask, currentTaskType);
+    }
+
+    // 2. Next unpracticed questions in currentTaskType (prefetched queue + curated/bank pool)
+    const prefetchedForCurrent = prefetchedQueueRef.current[currentTaskType] || [];
+    for (const pq of prefetchedForCurrent) {
+      if (targets.length >= 3) break;
+      if (!isQuestionCompleted(pq, completedSet)) {
+        addTargetIfUnique(pq, currentTaskType);
+      }
+    }
+
+    const filteredPool = getLoadedCuratedTasks(currentTaskType, level, topic, practiceMode);
+    const fullPool = getLoadedCuratedTasks(currentTaskType, 'all', 'all', practiceMode);
+    const pool = filteredPool.length > 0 ? filteredPool : fullPool;
+    const startIdx = (curatedIndices[currentTaskType] || 0) + 1;
+
+    for (let offset = 0; offset < pool.length && targets.length < 3; offset++) {
+      const candidate = pool[(startIdx + offset) % pool.length];
+      if (!isQuestionCompleted(candidate, completedSet)) {
+        addTargetIfUnique(candidate, currentTaskType);
+      }
+    }
+
+    // 3. If still < 3, check other task types in the current section
+    for (const secTaskType of sectionTasks) {
+      if (targets.length >= 3) break;
+      if (secTaskType === currentTaskType) continue;
+      const secPool = getLoadedCuratedTasks(secTaskType, 'all', 'all', practiceMode);
+      for (const candidate of secPool) {
+        if (targets.length >= 3) break;
+        if (!isQuestionCompleted(candidate, completedSet)) {
+          addTargetIfUnique(candidate, secTaskType);
+        }
+      }
+    }
+
+    // Fallback: if all questions were practiced, still take next questions from pool up to 3
+    for (let offset = 0; offset < pool.length && targets.length < 3; offset++) {
+      const candidate = pool[(startIdx + offset) % pool.length];
+      addTargetIfUnique(candidate, currentTaskType);
+    }
+
+    const totalToCache = Math.max(1, targets.length);
+    setPreCacheStatus(`🔊 Pre-Caching 1/${totalToCache}...`);
+
+    try {
+      await preCacheTargetQuestionsAudio(targets, (progress) => {
+        setPreCacheStatus(progress.statusText);
+      });
+    } finally {
+      setIsPreCachingAudio(false);
+    }
+  };
+
   return (
     <div className={`min-h-screen font-sans antialiased selection:bg-teal-200 selection:text-teal-950 flex flex-col motion-reduce:transition-none ${darkMode ? 'dark bg-slate-950 text-slate-100' : 'bg-[#fafaf8] text-slate-900'}`}>
       {/* Top Bar Contract: 3 Zones (Wordmark - 4 Nav Links - 1 Action CTA) */}
@@ -1743,18 +1805,18 @@ export default function App() {
                       onClick={handlePreCacheAudio}
                       disabled={isPreCachingAudio}
                       className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-75 ${
-                        preCacheStatus && preCacheStatus.includes('0ms ready')
+                        preCacheStatus && (preCacheStatus.startsWith('✅') || preCacheStatus.includes('0ms ready'))
                           ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
                           : 'bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 shadow-2xs'
                       }`}
-                      title="Pre-cache high-fidelity voices for the current section into IndexedDB for 0ms offline playback"
+                      title="Pre-cache high-fidelity voices for the active question + next 2 unpracticed questions into IndexedDB (toefl_tts_audio_cache) for 0ms offline playback"
                     >
                       <Volume2 className={`w-3.5 h-3.5 ${isPreCachingAudio ? 'animate-pulse text-teal-600' : 'text-teal-700'}`} />
                       <span>
                         {isPreCachingAudio
-                          ? preCacheStatus || 'Caching audio...'
-                          : preCacheStatus && preCacheStatus.includes('0ms ready')
-                          ? 'Audio Cached (0ms ⚡)'
+                          ? preCacheStatus || '🔊 Pre-Caching 1/3...'
+                          : preCacheStatus && preCacheStatus.startsWith('✅')
+                          ? preCacheStatus
                           : 'Pre-Cache Audio'}
                       </span>
                     </button>

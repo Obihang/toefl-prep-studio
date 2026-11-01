@@ -72,7 +72,7 @@ export const CURATED_MOCK_EXAM_SETS: MockExamSet[] = [
           title: 'Magnetoreception in Migratory Songbirds',
           level: 'intermediate',
           topic: 'science-tech',
-          text: 'Every autumn, millions of nocturnal songbirds navigate thousands of kilometers across featureless oceans toward equatorial wintering grounds. Ornithologists ha[ve] established th[at] these av[ian] travelers pos[sess] an int[ernal] magnetic com[pass] located wit[hin] their ret[inal] photoreceptors. Speci[alized] proteins cal[led] cryptochromes form radical pairs when struck by blue wavelength light, allowing birds to visually perceive the inclination angle of Earth’s geomagnetic field.',
+          text: 'Every autumn, millions of nocturnal songbirds navigate thousands of kilometers across featureless oceans toward equatorial wintering grounds. Ornithologists ha[ve] established th[at] these av[ian] travelers pos[sess] an int[ernal] magnetic com[pass] located wit[hin] their ret[inal] photoreceptors. Speci[alized] proteins cal[led] cryptochromes form radical pairs when struck by blue wavelength light, allowing birds to visually perceive the inclination angle of Earth’s geomagnetic field. Consequently, artificial light pollution around coastal cities can disrupt this delicate quantum compass and disorient migrating flocks at night.',
           totalBlanks: 10,
         },
         dailyLife: {
@@ -183,7 +183,7 @@ export const CURATED_MOCK_EXAM_SETS: MockExamSet[] = [
           title: 'Quantum Key Distribution and Photonic Cryptography',
           level: 'advanced',
           topic: 'science-tech',
-          text: 'Classical encryption algorithms rely on the computational difficulty of factoring large prime integers, a vulnerability threatened by fault-tolerant quantum computers. Quantum ke[y] distribution circum[vents] this math[ematical] risk b[y] encoding cryptographic bi[ts] into polarized sin[gle] photons trans[mitted] across fiber-optic cab[les]. Because measuring a quantum state irreversibly disturbs its superposition according to the Heisenberg uncertainty principle, any eavesdropper attempting to intercept the photonic stream immediately introduces detectable bit-error anomalies.',
+          text: 'Classical encryption algorithms rely on the computational difficulty of factoring large prime integers, a vulnerability threatened by fault-tolerant quantum computers. Quantum ke[y] distribution circum[vents] this math[ematical] risk b[y] encoding cryptog[raphic] binary bi[ts] into polar[ized] single pho[tons] transmitted acr[oss] fiber-optic cab[les]. Because measuring a quantum state irreversibly disturbs its superposition according to the Heisenberg uncertainty principle, any eavesdropper attempting to intercept the photonic stream immediately introduces detectable bit-error anomalies.',
           totalBlanks: 10,
         },
         dailyLife: {
@@ -294,7 +294,7 @@ export const CURATED_MOCK_EXAM_SETS: MockExamSet[] = [
           title: 'Rooftop Apiary Management and Urban Pollination',
           level: 'intermediate',
           topic: 'environment',
-          text: 'Many universities and municipal buildings have established honeybee colonies on vegetated rooftops to support local urban ecosystems. Curiously, urb[an] bees of[ten] exhibit hig[her] winter surv[ival] rates th[an] rural colo[nies] exposed t[o] agricultural monocu[ltures]. City parks, botanical gar[dens], and balcony flowerboxes pro[vide] a diverse, pesticide-free succession of nectar blossoms from early spring through late autumn.',
+          text: 'Many universities and municipal buildings have established honeybee colonies on vegetated rooftops to support local urban ecosystems. Curiously, ur[ban] honeybees of[ten] exhibit hig[her] winter surv[ival] rates th[an] rural colo[nies] routinely exp[osed] to agricu[ltural] monocultures a[nd] synthetic pesti[cides]. City parks, botanical gardens, and balcony flowerboxes provide a diverse, pesticide-free succession of nectar blossoms from early spring through late autumn.',
           totalBlanks: 10,
         },
         dailyLife: {
@@ -1014,7 +1014,7 @@ export const CURATED_MOCK_EXAM_SETS: MockExamSet[] = [
           title: 'Subterranean Mycorrhizal Fungal Networks in Forests',
           level: 'intermediate',
           topic: 'environment',
-          text: 'Beneath the litter of temperate woodland floors lies an intricate symbiotic web connecting tree roots with microscopic fungal filaments. Through th[is] mycorrhizal net[work], towering canopy tr[ees] transfer sur[plus] photosynthetic car[bon] sugars t[o] shaded saplings gro[wing] below. In exch[ange], the fungi foraging through mineral soil deliver essential phosphorus and nitrogen compounds directly into the host trees’ vascular root systems.',
+          text: 'Beneath the litter of temperate woodland floors lies an intricate symbiotic web connecting tree roots with microscopic fungal filaments. Through th[is] extensive mycor[rhizal] network, towe[ring] canopy tr[ees] regularly tran[sfer] surplus photosy[nthetic] carbon sug[ars] directly t[o] shaded sapl[ings] growing be[low]. In exchange, the fungi foraging through mineral soil deliver essential phosphorus and nitrogen compounds directly into the host trees’ vascular root systems.',
           totalBlanks: 10,
         },
         dailyLife: {
@@ -1125,7 +1125,7 @@ export const CURATED_MOCK_EXAM_SETS: MockExamSet[] = [
           title: 'Epigenetic Methylation and Phenotypic Plasticity',
           level: 'advanced',
           topic: 'science-tech',
-          text: 'While an organism’s underlying DNA nucleotide sequence remains static throughout its lifespan, environmental stressors can profoundly alter gene expression via epigenetic modifications. When methyl chemical gro[ups] attach t[o] cytosine ba[ses] along a pro[moter] region, transcription fac[tors] are physically blo[cked] from binding, effectively silen[cing] the assoc[iated] gene. Remarkably, certain stress-induced methylation marks can persist across meiotic cell division, priming offspring for harsh ecological conditions.',
+          text: 'While an organism’s underlying DNA nucleotide sequence remains static throughout its lifespan, environmental stressors can profoundly alter gene expression via epigenetic modifications. When met[hyl] chemical gro[ups] attach t[o] cytosine ba[ses] along act[ive] promoter reg[ions], transcription fac[tors] are physi[cally] blocked fr[om] cellular bin[ding], effectively silencing the associated gene. Remarkably, certain stress-induced methylation marks can persist across meiotic cell division, priming offspring for harsh ecological conditions.',
           totalBlanks: 10,
         },
         dailyLife: {
@@ -1236,7 +1236,7 @@ export const CURATED_MOCK_EXAM_SETS: MockExamSet[] = [
           title: 'Community Seed Libraries and Heirloom Crop Diversity',
           level: 'intermediate',
           topic: 'environment',
-          text: 'Across North America, public libraries and university agriculture extensions have launched community seed-lending programs to preserve regional crop biodiversity. Amateur gard[eners] borrow packets o[f] open-pollinated vegetable se[eds] in early spr[ing] and plant th[em] in backyard plots. At harvest time, participants allow a few healthy plants to mature fully and return dried seeds to the library catalog for the following season.',
+          text: 'Across North America, public libraries and university agriculture extensions have launched community seed-lending programs to preserve regional crop biodiversity. Amateur gard[eners] freely bor[row] curated pac[kets] of open-pol[linated] heirloom vege[table] seeds du[ring] early spr[ing] and care[fully] cultivate th[em] in back[yard] garden plots. At harvest time, participants allow a few healthy plants to mature fully and return dried seeds to the library catalog for the following season.',
           totalBlanks: 10,
         },
         dailyLife: {
@@ -1930,7 +1930,7 @@ export const CURATED_MOCK_EXAM_SETS: MockExamSet[] = [
           title: 'Transmission Spectroscopy of Exoplanetary Atmospheres',
           level: 'upper-intermediate',
           topic: 'science-tech',
-          text: 'Astronomers can determine the chemical composition of distant exoplanets without ever capturing a direct photograph of their surfaces. When an orbiting pla[net] transits dire[ctly] across t[he] face o[f] its parent st[ar], a tiny frac[tion] of starlight filters thr[ough] the planet’s upper gaseous limb.Because specific molecules absorb characteristic infrared wavelengths, space telescopes can analyze the resulting absorption spectrum to detect water vapor, methane, and carbon dioxide.',
+          text: 'Astronomers can determine the chemical composition of distant exoplanets without ever capturing a direct photograph of their surfaces. When dis[tant] orbiting pla[nets] transit dire[ctly] across t[he] luminous fa[ce] of th[eir] parent st[ar], small frac[tions] of star[light] filter thr[ough] the upper gaseous atmosphere. Because specific molecules absorb characteristic infrared wavelengths, space telescopes can analyze the resulting absorption spectrum to detect water vapor, methane, and carbon dioxide.',
           totalBlanks: 10,
         },
         dailyLife: {
@@ -2041,7 +2041,7 @@ export const CURATED_MOCK_EXAM_SETS: MockExamSet[] = [
           title: 'Supercritical Carbon Dioxide and Green Solvent Extraction',
           level: 'advanced',
           topic: 'science-tech',
-          text: 'When carbon dioxide is compressed and heated above its critical point of 31.1 degrees Celsius and 73.8 atmospheres, it enters a supercritical phase that exhibits properties of both a gas and a liquid. Supercritical CO2 effu[ses] through porous sol[ids] like a gas without surface ten[sion], yet dissolves non-polar org[anic] compounds like a liq[uid] solvent. Industrial chem[ists] use this non-toxic fl[uid] to decaffeinate cof[fee] beans and extract pharmace[utical] compounds without leaving haza[rdous] petrochemical residues.',
+          text: 'When carbon dioxide is compressed and heated above its critical point of 31.1 degrees Celsius and 73.8 atmospheres, it enters a supercritical phase that exhibits properties of both a gas and a liquid. Supercritical car[bon] dioxide eff[uses] rapidly thr[ough] porous sol[ids] without sur[face] tension, y[et] readily diss[olves] non-polar org[anic] compounds li[ke] liquid solv[ents]. Industrial chemists use this non-toxic fluid to decaffeinate coffee beans and extract pharmaceutical compounds without leaving hazardous petrochemical residues.',
           totalBlanks: 10,
         },
         dailyLife: {
@@ -2152,7 +2152,7 @@ export const CURATED_MOCK_EXAM_SETS: MockExamSet[] = [
           title: 'Indoor Vertical Farming and LED Wavelength Tuning',
           level: 'intermediate',
           topic: 'science-tech',
-          text: 'Indoor vertical farms cultivate leafy greens on stacked hydroponic trays inside climate-controlled warehouses. Because plant chlor[ophyll] absorbs prim[arily] red and blue light wavel[engths] while refle[cting] green light, horticul[turists] use speci[alized] LED fixt[ures] tuned to those exact spec[tral] peaks. Closed-loop irrig[ation] systems recycle transpired humidity, enabling vertical farms to produce lettuce using ninety-five percent less water than conven[tional] open-field agriculture.',
+          text: 'Indoor vertical farms cultivate leafy greens on stacked hydroponic trays inside climate-controlled warehouses. Because pl[ant] chlorophyll abs[orbs] primarily r[ed] and bl[ue] light wavel[engths] while refle[cting] green li[ght], modern horticu[lturists] deploy speci[alized] lighting fixt[ures] tuned to those exact spectral peaks. Closed-loop irrigation systems recycle transpired humidity, enabling vertical farms to produce lettuce using ninety-five percent less water than conventional open-field agriculture.',
           totalBlanks: 10,
         },
         dailyLife: {

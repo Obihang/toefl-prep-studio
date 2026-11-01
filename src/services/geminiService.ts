@@ -217,7 +217,8 @@ export async function executeWithFallback<T>(
       try {
         const models = GENERATION_MODELS[prov] || ['gemini-2.5-flash'];
         const res = await operation(prov, models[0], primaryKey);
-        requestsServedCount[prov] = (requestsServedCount[prov] || 0) + 1;
+        const actualProv = ((res as any)?.data?.providerUsed || (res as any)?.providerUsed || prov) as ModelProvider;
+        requestsServedCount[actualProv] = (requestsServedCount[actualProv] || 0) + 1;
         return res;
       } finally {
         inFlightCount[prov] = Math.max(0, (inFlightCount[prov] || 1) - 1);
@@ -229,7 +230,7 @@ export async function executeWithFallback<T>(
 
   const now = Date.now();
 
-  // If ALL configured providers are in cooldown, un-sidelined the one with min cooldown
+  // If ALL configured providers are in cooldown, un-sideline the one with min cooldown
   const allInCooldown = configuredProviders.every((p) => now < (cooldownUntil[p] || 0));
   if (allInCooldown) {
     let minP = configuredProviders[0];
@@ -243,46 +244,60 @@ export async function executeWithFallback<T>(
     cooldownUntil[minP] = 0;
   }
 
-  const healthy = configuredProviders.filter((p) => Date.now() >= (cooldownUntil[p] || 0));
-  const cooledDown = configuredProviders.filter((p) => Date.now() < (cooldownUntil[p] || 0));
+  const healthyProviders = configuredProviders.filter((p) => Date.now() >= (cooldownUntil[p] || 0));
+  const cooledDownProviders = configuredProviders.filter((p) => Date.now() < (cooldownUntil[p] || 0));
 
-  const startIdx = roundRobinCounter++;
-  healthy.sort((a, b) => {
+  // Advance round-robin cursor synchronously before any await
+  const baseHealthyOrder = [...healthyProviders];
+  const cursor =
+    baseHealthyOrder.length > 0 ? roundRobinCounter % baseHealthyOrder.length : 0;
+  roundRobinCounter =
+    baseHealthyOrder.length > 0
+      ? (roundRobinCounter + 1) % baseHealthyOrder.length
+      : 0;
+
+  healthyProviders.sort((a, b) => {
     const loadA = inFlightCount[a] || 0;
     const loadB = inFlightCount[b] || 0;
     if (loadA !== loadB) return loadA - loadB;
 
-    if (preferred && preferred !== 'auto' && preferred !== 'custom') {
-      if (a === preferred) return -1;
-      if (b === preferred) return 1;
-    }
-
-    const idxA = (configuredProviders.indexOf(a) - startIdx + configuredProviders.length) % configuredProviders.length;
-    const idxB = (configuredProviders.indexOf(b) - startIdx + configuredProviders.length) % configuredProviders.length;
+    const idxA =
+      (baseHealthyOrder.indexOf(a) - cursor + baseHealthyOrder.length) %
+      baseHealthyOrder.length;
+    const idxB =
+      (baseHealthyOrder.indexOf(b) - cursor + baseHealthyOrder.length) %
+      baseHealthyOrder.length;
     return idxA - idxB;
   });
 
-  const candidateList = [...healthy, ...cooledDown];
+  const orderedCandidates = [...healthyProviders, ...cooledDownProviders];
   let lastError: any = null;
 
-  for (const provider of candidateList) {
-    const apiKey = (providerKeys[provider] || getStoredApiKey(provider as ApiProvider) || '').trim();
-    if (!apiKey) continue;
-
-    const models =
-      role === 'generator'
-        ? await fetchDynamicModels(provider, apiKey)
-        : EVALUATION_MODELS[provider] || GENERATION_MODELS[provider] || [];
-
+  for (const provider of orderedCandidates) {
+    // Synchronously reserve this provider on the VERY FIRST LINE before any await (including fetchDynamicModels)
+    // so concurrent workers starting at t=0ms see inFlightCount[provider] === 1 immediately!
     inFlightCount[provider] = (inFlightCount[provider] || 0) + 1;
     if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
 
     try {
+      const apiKey = (providerKeys[provider] || getStoredApiKey(provider as ApiProvider) || '').trim();
+      if (!apiKey) continue;
+
+      const models =
+        role === 'generator'
+          ? await fetchDynamicModels(provider, apiKey)
+          : EVALUATION_MODELS[provider] || GENERATION_MODELS[provider] || [];
+
       for (const model of models) {
         try {
           const res = await operation(provider, model, apiKey);
-          cooldownUntil[provider] = 0;
-          requestsServedCount[provider] = (requestsServedCount[provider] || 0) + 1;
+          const actualProvider = (
+            (res as any)?.data?.providerUsed ||
+            (res as any)?.providerUsed ||
+            provider
+          ) as ModelProvider;
+          cooldownUntil[actualProvider] = 0;
+          requestsServedCount[actualProvider] = (requestsServedCount[actualProvider] || 0) + 1;
           return res;
         } catch (err: any) {
           lastError = err;
@@ -308,6 +323,8 @@ export async function executeWithFallback<T>(
             msg.includes('billing')
           ) {
             cooldownUntil[provider] = Date.now() + 10 * 60_000;
+            break;
+          } else if (err?.providerChainExhausted) {
             break;
           }
         }
@@ -342,6 +359,39 @@ function resolveActiveProviderAndKey(): {
 
   return { provider, apiKey, providerKeys };
 }
+
+function buildSingleProviderHeaders(provider: string, apiKey: string): Record<string, string> {
+  const baseHeaders = getApiHeaders();
+  const headers: Record<string, string> = {
+    ...baseHeaders,
+    'x-api-provider': provider,
+    'x-api-key': apiKey,
+  };
+  for (const p of PROVIDER_ORDER) {
+    delete headers[`x-api-key-${p}`];
+  }
+  headers[`x-api-key-${provider}`] = apiKey;
+  if (provider === 'gemini') {
+    headers['x-gemini-api-key'] = apiKey;
+  } else {
+    delete headers['x-gemini-api-key'];
+  }
+  if (provider === 'groq') {
+    headers['x-groq-key'] = apiKey;
+  } else {
+    delete headers['x-groq-key'];
+  }
+  return headers;
+}
+
+export const OFFICIAL_COMPLETE_WORDS_SPEC = {
+  headSentenceWords: '12-18 words (1 introductory head sentence, 100% intact)',
+  examMiddleWords: '22-28 words (1-2 middle sentences holding 10 blanks)',
+  coachMiddleWords: '55-65 words (1-2 middle sentences holding 25 blanks)',
+  tailSentenceWords: '12-18 words (1 concluding tail sentence, 100% intact)',
+  instruction:
+    'Write a concise academic paragraph consisting of: (1) ONE introductory head sentence (~12–18 words), (2) ONE or TWO middle sentences (~22–28 words total in Exam Mode; ~55–65 words in Coach Mode) that will hold the blanks, and (3) ONE concluding tail sentence (~12–18 words). Write 100% plain English with ZERO brackets [ ] or underscores.',
+} as const;
 
 export const OFFICIAL_5_READING_QUESTION_TYPES = [
   'Factual Detail ("According to paragraph X...")',
@@ -409,6 +459,8 @@ export async function callBackendGenerate(
       ? { coachMode: true, mode: 'coach' }
       : undefined;
 
+  const isCompleteWords =
+    taskType === 'complete-words' || taskType === 'complete_words';
   const isReadingAcademic =
     taskType === 'reading-academic' || taskType === 'reading_academic' || taskType === 'reading-passage';
   const isListeningWithExcerpt =
@@ -430,7 +482,12 @@ export async function callBackendGenerate(
     taskType === 'speaking-listen-repeat';
   const readingQuestionFocus =
     basePromptData?.questionSkillFocus || basePromptData?.readingQuestionFocus || 'all';
-  const enrichedPromptData = isReadingAcademic
+  const enrichedPromptData = isCompleteWords
+    ? {
+        ...(basePromptData || {}),
+        ...OFFICIAL_COMPLETE_WORDS_SPEC,
+      }
+    : isReadingAcademic
     ? {
         ...(basePromptData || {}),
         questionSkillFocus: readingQuestionFocus,
@@ -457,46 +514,71 @@ export async function callBackendGenerate(
       }
     : basePromptData;
 
-  return executeWithFallback(async (provider, _model, apiKey) => {
-    const providerKeys = getAllProviderKeys();
-    const options = {
-      provider,
-      apiKey,
-      customApiKey: apiKey,
-      providerKeys,
-      availableKeys: providerKeys,
-      coachMode: isCoachMode,
-      ...(optionsObj || {}),
-    };
-
-    const res = await safeFetchJson('/api/generate-task', {
-      method: 'POST',
-      headers: getApiHeaders(),
-      body: JSON.stringify({
-        taskType,
-        level,
-        topic,
-        coachMode: isCoachMode,
-        promptData: enrichedPromptData,
-        customApiKey: apiKey,
+  try {
+    return await executeWithFallback(async (provider, _model, apiKey) => {
+      const singleProviderMap = { [provider]: apiKey };
+      const options = {
         provider,
         apiKey,
-        providerKeys,
-        availableKeys: providerKeys,
-        options,
-      }),
-    });
+        customApiKey: apiKey,
+        strictProvider: true,
+        providerKeys: singleProviderMap,
+        availableKeys: singleProviderMap,
+        coachMode: isCoachMode,
+        ...(optionsObj || {}),
+      };
 
-    if (!res || res.success === false) {
-      const err: any = new Error(res?.error || 'Failed to generate task');
-      if (res?.status) err.status = res.status;
-      throw err;
+      const res = await safeFetchJson('/api/generate-task', {
+        method: 'POST',
+        headers: buildSingleProviderHeaders(provider, apiKey),
+        body: JSON.stringify({
+          taskType,
+          level,
+          topic,
+          coachMode: isCoachMode,
+          promptData: enrichedPromptData,
+          customApiKey: apiKey,
+          provider,
+          apiKey,
+          strictProvider: true,
+          providerKeys: singleProviderMap,
+          availableKeys: singleProviderMap,
+          options,
+        }),
+      });
+
+      if (!res || res.success === false) {
+        const err: any = new Error(res?.error || `Failed to generate task with ${provider}`);
+        if (res?.status) err.status = res.status;
+        err.providerChainExhausted = true;
+        throw err;
+      }
+      if (res.data?.isFallback) {
+        const err: any = new Error(
+          res.data.fallbackReason || `Provider ${provider} returned fallback`
+        );
+        err.status = res.data.isQuotaExhausted ? 429 : 500;
+        err.fallbackData = res.data;
+        err.providerChainExhausted = true;
+        throw err;
+      }
+      if (res.data) {
+        res.data = {
+          ...normalizeTaskData(res.data, taskType, { coachMode: isCoachMode }),
+          providerUsed: res.data.providerUsed || provider,
+        };
+      }
+      return res;
+    });
+  } catch (err: any) {
+    if (err?.fallbackData) {
+      return {
+        success: true,
+        data: normalizeTaskData(err.fallbackData, taskType, { coachMode: isCoachMode }),
+      };
     }
-    if (res.data) {
-      res.data = normalizeTaskData(res.data, taskType, { coachMode: isCoachMode });
-    }
-    return res;
-  });
+    throw err;
+  }
 }
 
 export async function generateTaskContent(
@@ -525,7 +607,7 @@ export async function evaluateResponse(
   studentResponse: any,
   extraOptions?: Record<string, any>
 ): Promise<any> {
-  const { provider, apiKey, providerKeys } = resolveActiveProviderAndKey();
+  const { apiKey } = resolveActiveProviderAndKey();
   const localBaseline = evaluateResponseLocally(promptData, studentResponse, taskType, extraOptions);
 
   if (extraOptions?.mode === 'local' || (!hasAnyProviderKey() && !apiKey)) {
@@ -533,19 +615,20 @@ export async function evaluateResponse(
   }
 
   return executeWithFallback(async (prov, _model, key) => {
-    const providerKeys = getAllProviderKeys();
+    const singleProviderMap = { [prov]: key };
     const options = {
       provider: prov,
       apiKey: key,
       customApiKey: key,
-      providerKeys,
-      availableKeys: providerKeys,
+      strictProvider: true,
+      providerKeys: singleProviderMap,
+      availableKeys: singleProviderMap,
       ...(extraOptions || {}),
     };
 
     const res = await safeFetchJson('/api/evaluate-response', {
       method: 'POST',
-      headers: getApiHeaders(),
+      headers: buildSingleProviderHeaders(prov, key),
       body: JSON.stringify({
         taskType,
         promptData,
@@ -553,18 +636,21 @@ export async function evaluateResponse(
         customApiKey: key,
         provider: prov,
         apiKey: key,
-        providerKeys,
-        availableKeys: providerKeys,
+        strictProvider: true,
+        providerKeys: singleProviderMap,
+        availableKeys: singleProviderMap,
         options,
       }),
     });
 
-    if (!res || res.success === false) {
-      return localBaseline;
+    if (!res || res.success === false || res.data?.isLocalEvaluation) {
+      const err: any = new Error(res?.error || `Evaluation failed on ${prov}`);
+      err.providerChainExhausted = true;
+      throw err;
     }
     const rawEval = res?.data || res;
     return mergeAiAndLocalEvaluation(rawEval, localBaseline);
-  }).catch((err) => {
+  }, 'evaluator').catch((err) => {
     console.warn('[geminiService] evaluateResponse AI failed, falling back to localBaseline:', err);
     return localBaseline;
   });

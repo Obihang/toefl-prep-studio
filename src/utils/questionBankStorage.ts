@@ -2,6 +2,7 @@ import { isHighQualityTask } from './questionValidator';
 import {
   normalizeTaskData,
   normalizeQuestionBankItem,
+  normalizeCompleteWordsTask,
   validateNormalizedTask,
   normalizeDifficultyLabel,
   normalizeTopicLabel,
@@ -63,7 +64,8 @@ export const TOEFL_2026_PURGE_V5 = TOEFL_2026_PURGE_V19;
 export const TOEFL_2026_PURGE_V4 = TOEFL_2026_PURGE_V19;
 export const TOEFL_2026_PURGE_V3 = TOEFL_2026_PURGE_V19;
 export const TOEFL_2026_PURGE_V2 = TOEFL_2026_PURGE_V19;
-export const STATIC_SHARDS_SYNC_KEY = 'toefl_static_shards_synced_v30';
+export const STATIC_SHARDS_SYNC_KEY = 'toefl_static_shards_synced_v31';
+export const MIGRATE_CW_HEAD_TAIL_V1 = 'toefl_cw_head_tail_migrated_v1';
 
 export function canonicalizeTaskType(taskType: string): string {
   return normalizerCanonicalizeTaskType(taskType);
@@ -224,6 +226,266 @@ export async function clearAllLocalQuestions(): Promise<void> {
 }
 
 let purgePromise: Promise<void> | null = null;
+let cwHeadTailMigrationPromise: Promise<void> | null = null;
+
+/**
+ * One-time automatic migration that normalizes and overwrites all existing `complete_words` / `complete-words`
+ * documents across IndexedDB (`toefl_question_bank` and `coach_questions`) and Firestore (`questions` and `coach_questions`)
+ * so every single existing question follows the strict 1 Head Sentence + Blanks + 1 Tail Sentence structure.
+ */
+export async function migrateCompleteWordsHeadTailV1(): Promise<void> {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return;
+  if (localStorage.getItem(MIGRATE_CW_HEAD_TAIL_V1) === 'true') return;
+  if (cwHeadTailMigrationPromise) return cwHeadTailMigrationPromise;
+
+  cwHeadTailMigrationPromise = (async () => {
+    try {
+      // 1. Clear or normalize any cached complete-words items in localStorage/sessionStorage prefetch queues
+      for (const storage of [localStorage, typeof sessionStorage !== 'undefined' ? sessionStorage : null]) {
+        if (!storage) continue;
+        for (const key of [
+          'toefl_prefetched_queue_v1',
+          'toefl_prefetch_queue_v3',
+          'toefl_prefetch_queue_v4',
+          'toefl_prefetch_queue_coach_v1',
+        ]) {
+          try {
+            const raw = storage.getItem(key);
+            if (!raw) continue;
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+              delete parsed['complete-words'];
+              delete parsed['complete_words'];
+              delete parsed['exam::complete-words'];
+              delete parsed['coach::complete-words'];
+              storage.setItem(key, JSON.stringify(parsed));
+            }
+          } catch {}
+        }
+      }
+
+      // 2. Migrate any edited complete-words items in localStorage (unless isManualDevEdit === true)
+      try {
+        const editedMap = getEditedQuestionsMap();
+        let editedModified = false;
+        for (const [id, item] of Object.entries(editedMap)) {
+          if (!item || typeof item !== 'object') continue;
+          const itemType = canonicalizeTaskType(item.taskType || item.type || '');
+          const looksLikeCw =
+            itemType === 'complete-words' ||
+            String(id).startsWith('cw-') ||
+            String(id).startsWith('coach_cw_') ||
+            Array.isArray(item.blanks);
+          if (looksLikeCw && !item.isManualDevEdit && !item.content?.isManualDevEdit) {
+            const isCoach =
+              item.mode === 'coach' ||
+              Boolean(item.coachMode) ||
+              String(id).startsWith('coach_');
+            const norm = normalizeCompleteWordsTask({
+              ...(item.content || item),
+              mode: isCoach ? 'coach' : 'exam',
+              coachMode: isCoach,
+            });
+            editedMap[id] = {
+              ...item,
+              ...norm,
+              ...(item.content ? { content: { ...item.content, ...norm } } : {}),
+            };
+            editedModified = true;
+          }
+        }
+        if (editedModified) {
+          localStorage.setItem(EDITED_QUESTIONS_STORAGE_KEY, JSON.stringify(editedMap));
+        }
+      } catch {}
+
+      // 3. Migrate all complete-words documents in IndexedDB (`toefl_question_bank` and `coach_questions`)
+      try {
+        const dbInstance = await openIndexedDB();
+        for (const mode of ['exam', 'coach'] as const) {
+          const storeName = getIdbStoreName(mode);
+          const allRows: any[] = await new Promise((resolve) => {
+            try {
+              const tx = dbInstance.transaction(storeName, 'readonly');
+              const store = tx.objectStore(storeName);
+              const req = store.getAll();
+              req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+              req.onerror = () => resolve([]);
+            } catch {
+              resolve([]);
+            }
+          });
+
+          const updatedRows: any[] = [];
+          for (const row of allRows) {
+            const rawType = row?.taskType || row?.type || row?.content?.taskType || '';
+            if (canonicalizeTaskType(rawType) !== 'complete-words') continue;
+
+            const baseContent = row?.content || row || {};
+            const normalized = normalizeCompleteWordsTask({
+              ...baseContent,
+              mode,
+              coachMode: mode === 'coach',
+            });
+            const updatedContent = {
+              ...baseContent,
+              ...normalized,
+              id: baseContent.id || row.id,
+              taskType: 'complete-words',
+              mode,
+              schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+            };
+            const contentHash = await computeContentHash('complete-words', updatedContent);
+            updatedRows.push({
+              ...row,
+              taskType: 'complete-words',
+              content: updatedContent,
+              text: normalized.text,
+              passage: normalized.passage,
+              blanks: normalized.blanks,
+              totalBlanks: normalized.totalBlanks,
+              contentHash,
+              schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+              updatedAt: Date.now(),
+            });
+          }
+
+          if (updatedRows.length > 0) {
+            await new Promise<void>((resolve) => {
+              try {
+                const tx = dbInstance.transaction(storeName, 'readwrite');
+                const store = tx.objectStore(storeName);
+                for (const uRow of updatedRows) {
+                  store.put(uRow);
+                }
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => resolve();
+                tx.onabort = () => resolve();
+              } catch {
+                resolve();
+              }
+            });
+          }
+        }
+
+        // Also migrate any completeWords inside cached mock exam sets in IndexedDB (`toefl_mock_sets`)
+        const mockRows: any[] = await new Promise((resolve) => {
+          try {
+            const tx = dbInstance.transaction('toefl_mock_sets', 'readonly');
+            const store = tx.objectStore('toefl_mock_sets');
+            const req = store.getAll();
+            req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+            req.onerror = () => resolve([]);
+          } catch {
+            resolve([]);
+          }
+        });
+        if (mockRows.length > 0) {
+          const updatedMocks: any[] = [];
+          for (const mSet of mockRows) {
+            if (!mSet?.modules) continue;
+            let changed = false;
+            const nextModules = { ...mSet.modules };
+            for (const modKey of ['readingModule1', 'readingModule2Hard', 'readingModule2Easy'] as const) {
+              const cw = nextModules[modKey]?.completeWords;
+              if (cw) {
+                const normCw = normalizeCompleteWordsTask({ ...cw, mode: 'exam', coachMode: false });
+                nextModules[modKey] = {
+                  ...nextModules[modKey],
+                  completeWords: { ...cw, ...normCw },
+                };
+                changed = true;
+              }
+            }
+            if (changed) {
+              updatedMocks.push({ ...mSet, modules: nextModules });
+            }
+          }
+          if (updatedMocks.length > 0) {
+            await new Promise<void>((resolve) => {
+              try {
+                const tx = dbInstance.transaction('toefl_mock_sets', 'readwrite');
+                const store = tx.objectStore('toefl_mock_sets');
+                for (const uMock of updatedMocks) {
+                  store.put(uMock);
+                }
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => resolve();
+                tx.onabort = () => resolve();
+              } catch {
+                resolve();
+              }
+            });
+          }
+        }
+      } catch (idbErr) {
+        console.warn('IndexedDB complete-words migration warning:', idbErr);
+      }
+
+      // Reset in-memory complete-words caches so they reload with migrated data
+      delete curatedMemoryCache['complete-words'];
+      delete coachMemoryCache['complete-words'];
+
+      // 4. Migrate and overwrite all complete-words documents in Firestore (`questions` and `coach_questions`)
+      try {
+        await ensureAuthenticated();
+        if (db) {
+          for (const mode of ['exam', 'coach'] as const) {
+            const colName = getFirestoreCollectionName(mode);
+            const snap = await getDocs(collection(db, colName));
+            for (const docSnap of snap.docs) {
+              const rawDoc = docSnap.data();
+              if (!rawDoc || rawDoc.deleted === true) continue;
+              const rawType = rawDoc.taskType || rawDoc.type || rawDoc.content?.taskType || '';
+              if (canonicalizeTaskType(rawType) !== 'complete-words') continue;
+
+              const baseContent = rawDoc.content || rawDoc;
+              const normalized = normalizeCompleteWordsTask({
+                ...baseContent,
+                mode,
+                coachMode: mode === 'coach',
+              });
+              const updatedContent = {
+                ...baseContent,
+                ...normalized,
+                id: baseContent.id || docSnap.id,
+                taskType: 'complete-words',
+                mode,
+                schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+              };
+              const contentHash = await computeContentHash('complete-words', updatedContent);
+              const updatedDoc = {
+                ...rawDoc,
+                id: docSnap.id,
+                taskType: 'complete-words',
+                content: updatedContent,
+                text: normalized.text,
+                passage: normalized.passage,
+                blanks: normalized.blanks,
+                totalBlanks: normalized.totalBlanks,
+                contentHash,
+                schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+                updatedAt: Date.now(),
+              };
+
+              await setDoc(doc(db, colName, docSnap.id), updatedDoc, { merge: true });
+            }
+          }
+        }
+      } catch (fsErr) {
+        console.warn('Firestore complete-words migration warning:', fsErr);
+      }
+
+      localStorage.setItem(MIGRATE_CW_HEAD_TAIL_V1, 'true');
+    } catch (err) {
+      console.warn('Error during MIGRATE_CW_HEAD_TAIL_V1:', err);
+    } finally {
+      cwHeadTailMigrationPromise = null;
+    }
+  })();
+
+  return cwHeadTailMigrationPromise;
+}
 
 /**
  * One-time 2026 migration that purges legacy/corrupted questions from IndexedDB
@@ -231,26 +493,28 @@ let purgePromise: Promise<void> | null = null;
  */
 export async function ensurePurged2026V2(): Promise<void> {
   if (typeof window === 'undefined' || typeof localStorage === 'undefined') return;
-  if (localStorage.getItem(TOEFL_2026_PURGE_V19) === 'true') return;
-  if (purgePromise) return purgePromise;
+  if (localStorage.getItem(TOEFL_2026_PURGE_V19) !== 'true') {
+    if (!purgePromise) {
+      purgePromise = (async () => {
+        try {
+          await clearAllLocalQuestions();
+          localStorage.removeItem('toefl_prefetched_queue_v1');
+          localStorage.removeItem('toefl_prefetch_queue_v3');
+          localStorage.removeItem('toefl_seen_question_ids');
 
-  purgePromise = (async () => {
-    try {
-      await clearAllLocalQuestions();
-      localStorage.removeItem('toefl_prefetched_queue_v1');
-      localStorage.removeItem('toefl_prefetch_queue_v3');
-      localStorage.removeItem('toefl_seen_question_ids');
-
-      localStorage.setItem(TOEFL_2026_PURGE_V19, 'true');
-      localStorage.setItem(STATIC_SHARDS_SYNC_KEY, 'true');
-    } catch (err) {
-      console.warn('Error during TOEFL_2026_PURGE_V19 migration:', err);
-    } finally {
-      purgePromise = null;
+          localStorage.setItem(TOEFL_2026_PURGE_V19, 'true');
+          localStorage.setItem(STATIC_SHARDS_SYNC_KEY, 'true');
+        } catch (err) {
+          console.warn('Error during TOEFL_2026_PURGE_V19 migration:', err);
+        } finally {
+          purgePromise = null;
+        }
+      })();
     }
-  })();
+    await purgePromise;
+  }
 
-  return purgePromise;
+  await migrateCompleteWordsHeadTailV1();
 }
 
 export const purgeLegacyQuestionsIfNeeded = ensurePurged2026V2;
@@ -832,10 +1096,17 @@ export async function syncCuratedQuestionBank(
         const rawBase = coachItems[idx];
         const qId = String(rawBase.id || `coach-${canonicalType}-curated-${idx + 1}`);
         if (deletedSet.has(qId)) continue;
-        const rawItem = editedMap[qId] ? { ...rawBase, ...editedMap[qId] } : rawBase;
-        const normalizedWrapper = normalizeQuestionBankItem(rawItem, canonicalType);
+        const isEditedOverride = Boolean(
+          editedMap[qId] || rawBase.isManualDevEdit || rawBase.isEdited
+        );
+        const rawItem = editedMap[qId]
+          ? { ...rawBase, ...editedMap[qId], isEdited: true, isManualDevEdit: true }
+          : rawBase;
+        const normalizedWrapper = isEditedOverride
+          ? { content: rawItem }
+          : normalizeQuestionBankItem(rawItem, canonicalType);
         const item = normalizedWrapper?.content || normalizedWrapper;
-        if (!item || !validateNormalizedTask(canonicalType, item)) {
+        if (!item || (!isEditedOverride && !validateNormalizedTask(canonicalType, item))) {
           continue;
         }
         const validLevel = normalizeDifficultyLabel(
@@ -854,6 +1125,13 @@ export async function syncCuratedQuestionBank(
           difficulty: validLevel,
           topic: validTopic,
           schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+          ...(isEditedOverride
+            ? {
+                isEdited: true,
+                isManualDevEdit: true,
+                editedBy: rawItem.editedBy || 'Obi',
+              }
+            : {}),
         };
 
         const sig = getQuestionContentSignature(canonicalType, enrichedContent);
@@ -901,10 +1179,17 @@ export async function syncCuratedQuestionBank(
               const rawBase = json[idx];
               const qId = String(rawBase.id || `${shard}-curated-${idx + 1}`);
               if (deletedSet.has(qId)) continue;
-              const rawItem = editedMap[qId] ? { ...rawBase, ...editedMap[qId] } : rawBase;
-              const normalizedWrapper = normalizeQuestionBankItem(rawItem, canonicalType);
+              const isEditedOverride = Boolean(
+                editedMap[qId] || rawBase.isManualDevEdit || rawBase.isEdited
+              );
+              const rawItem = editedMap[qId]
+                ? { ...rawBase, ...editedMap[qId], isEdited: true, isManualDevEdit: true }
+                : rawBase;
+              const normalizedWrapper = isEditedOverride
+                ? { content: rawItem }
+                : normalizeQuestionBankItem(rawItem, canonicalType);
               const item = normalizedWrapper?.content || normalizedWrapper;
-              if (!item || !validateNormalizedTask(canonicalType, item)) {
+              if (!item || (!isEditedOverride && !validateNormalizedTask(canonicalType, item))) {
                 continue;
               }
               const validLevel = normalizeDifficultyLabel(
@@ -923,6 +1208,13 @@ export async function syncCuratedQuestionBank(
                 difficulty: validLevel,
                 topic: validTopic,
                 schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+                ...(isEditedOverride
+                  ? {
+                      isEdited: true,
+                      isManualDevEdit: true,
+                      editedBy: rawItem.editedBy || 'Obi',
+                    }
+                  : {}),
               };
 
               const sig = getQuestionContentSignature(canonicalType, enrichedContent);
@@ -976,16 +1268,44 @@ export async function syncCuratedQuestionBank(
           const targetTaskType = canonicalizeTaskType(
             rawDoc.taskType || rawDoc.type || 'academic-discussion'
           );
-          const mergedDoc = editedMap[qId] ? { ...rawDoc, content: { ...(rawDoc.content || rawDoc), ...editedMap[qId] } } : rawDoc;
-          const normalizedWrapper = normalizeQuestionBankItem(mergedDoc, targetTaskType);
+          const innerRawId = String(rawDoc.content?.id || rawDoc.id || '');
+          if (innerRawId && deletedSet.has(innerRawId)) return;
+
+          const isDocEdited = Boolean(
+            editedMap[qId] ||
+              (innerRawId && editedMap[innerRawId]) ||
+              rawDoc.isManualDevEdit ||
+              rawDoc.isEdited ||
+              rawDoc.editedBy ||
+              rawDoc.content?.isManualDevEdit ||
+              rawDoc.content?.isEdited ||
+              rawDoc.content?.editedBy
+          );
+
+          const overrideObj = editedMap[qId] || (innerRawId ? editedMap[innerRawId] : null);
+          const mergedDoc = overrideObj
+            ? {
+                ...rawDoc,
+                content: {
+                  ...(rawDoc.content || rawDoc),
+                  ...overrideObj,
+                  isEdited: true,
+                  isManualDevEdit: true,
+                },
+              }
+            : rawDoc;
+          const normalizedWrapper = isDocEdited
+            ? { content: mergedDoc.content || mergedDoc }
+            : normalizeQuestionBankItem(mergedDoc, targetTaskType);
           const contentToCheck = normalizedWrapper?.content || normalizedWrapper;
 
           if (
             contentToCheck &&
             targetTaskType &&
             counts[targetTaskType] !== undefined &&
-            validateNormalizedTask(targetTaskType, contentToCheck) &&
-            isHighQualityTask(contentToCheck, targetTaskType)
+            (isDocEdited ||
+              (validateNormalizedTask(targetTaskType, contentToCheck) &&
+                isHighQualityTask(contentToCheck, targetTaskType)))
           ) {
             const innerId = String(contentToCheck.id || '');
             if (innerId && deletedSet.has(innerId)) return;
@@ -995,15 +1315,6 @@ export async function syncCuratedQuestionBank(
             const validTopic = normalizeTopicLabel(
               mergedDoc.topic || contentToCheck.topic,
               contentToCheck
-            );
-
-            const isDocEdited = Boolean(
-              editedMap[qId] ||
-                (innerId && editedMap[innerId]) ||
-                rawDoc.isEdited ||
-                rawDoc.editedBy ||
-                rawDoc.content?.isEdited ||
-                rawDoc.content?.editedBy
             );
 
             const enrichedContent = {
@@ -1019,6 +1330,7 @@ export async function syncCuratedQuestionBank(
               ...(isDocEdited
                 ? {
                     isEdited: true,
+                    isManualDevEdit: true,
                     editedBy: rawDoc.content?.editedBy || rawDoc.editedBy || 'Obi',
                   }
                 : {}),
@@ -1110,20 +1422,27 @@ export async function syncCuratedQuestionBank(
       if (qId && deletedSet.has(qId)) continue;
       const isRowEdited = Boolean(
         editedMap[qId] ||
+          row.isManualDevEdit ||
           row.isEdited ||
           row.editedBy ||
+          rawRowContent.isManualDevEdit ||
           rawRowContent.isEdited ||
           rawRowContent.editedBy
       );
-      const effectiveRaw = editedMap[qId] ? { ...rawRowContent, ...editedMap[qId] } : rawRowContent;
-      const normalizedWrapper = normalizeQuestionBankItem(effectiveRaw, rowType);
+      const effectiveRaw = editedMap[qId]
+        ? { ...rawRowContent, ...editedMap[qId], isEdited: true, isManualDevEdit: true }
+        : rawRowContent;
+      const normalizedWrapper = isRowEdited
+        ? { content: effectiveRaw }
+        : normalizeQuestionBankItem(effectiveRaw, rowType);
       const rowContent = normalizedWrapper?.content || normalizedWrapper;
       if (
         rowType &&
         counts[rowType] !== undefined &&
         rowContent &&
-        validateNormalizedTask(rowType, rowContent) &&
-        isHighQualityTask(rowContent, rowType)
+        (isRowEdited ||
+          (validateNormalizedTask(rowType, rowContent) &&
+            isHighQualityTask(rowContent, rowType)))
       ) {
         const validLevel = normalizeDifficultyLabel(effectiveRaw.level || row.level || rowContent.level);
         const validTopic = normalizeTopicLabel(effectiveRaw.topic || row.topic || rowContent.topic, rowContent);
@@ -1139,6 +1458,7 @@ export async function syncCuratedQuestionBank(
           ...(isRowEdited
             ? {
                 isEdited: true,
+                isManualDevEdit: true,
                 editedBy: rawRowContent.editedBy || row.editedBy || 'Obi',
               }
             : {}),
@@ -1230,7 +1550,7 @@ const isSyncingToFirestoreByMode: Record<'exam' | 'coach', boolean> = {
 
 /**
  * Syncs all deduplicated questions from in-memory cache and IndexedDB to the Firestore 'questions' or 'coach_questions' collection
- * if they are not already present in Firestore.
+ * using a fast Firestore writeBatch while strictly respecting deletedQuestionIds and isManualDevEdit.
  */
 export async function syncLocalQuestionsToFirestore(
   mode: 'exam' | 'coach' = 'exam'
@@ -1247,6 +1567,7 @@ export async function syncLocalQuestionsToFirestore(
   let existing = 0;
   const collectionName = getFirestoreCollectionName(mode);
   const targetMemCache = getMemoryCacheForMode(mode);
+  const deletedSet = getDeletedQuestionIds();
 
   try {
     await ensureAuthenticated();
@@ -1254,14 +1575,20 @@ export async function syncLocalQuestionsToFirestore(
     const existingIds = new Set<string>();
     const existingSigs = new Set<string>();
     const existingHashes = new Set<string>();
+    const existingEditedIds = new Set<string>();
 
     const snap = await getDocs(collection(db, collectionName));
     snap.forEach((docSnap) => {
       const d = docSnap.data();
+      if (d?.isManualDevEdit || d?.isEdited || d?.content?.isManualDevEdit || d?.content?.isEdited) {
+        existingEditedIds.add(docSnap.id);
+        if (d?.content?.id) existingEditedIds.add(String(d.content.id));
+      }
       const docSchema = d?.schemaVersion ?? d?.content?.schemaVersion;
       if (docSchema !== CURRENT_BANK_SCHEMA_VERSION) return;
       existing++;
       existingIds.add(docSnap.id);
+      if (d?.content?.id) existingIds.add(String(d.content.id));
       if (d?.contentHash) existingHashes.add(String(d.contentHash));
       const tType = canonicalizeTaskType(d?.taskType || d?.type || 'academic-discussion');
       const sig = getQuestionContentSignature(tType, d?.content || d);
@@ -1281,8 +1608,9 @@ export async function syncLocalQuestionsToFirestore(
     for (const tId of CANONICAL_TASK_IDS) {
       const list = targetMemCache[tId] || [];
       for (const item of list) {
-        if (!isHighQualityTask(item, tId)) continue;
         const qId = String(item.id || '');
+        if (qId && deletedSet.has(qId)) continue;
+        if (!item.isManualDevEdit && !item.isEdited && !isHighQualityTask(item, tId)) continue;
         const validLevel = normalizeDifficultyLabel(item.level || item.difficulty);
         const validTopic = normalizeTopicLabel(item.topic || item.category, item);
         candidates.push({
@@ -1301,11 +1629,23 @@ export async function syncLocalQuestionsToFirestore(
 
     for (const cand of candidates) {
       const sig = getQuestionContentSignature(cand.taskType, cand.content);
+      if (deletedSet.has(sig) || (cand.id && deletedSet.has(cand.id))) {
+        continue;
+      }
       const contentHash = await computeContentHash(cand.taskType, cand.content);
       const docId =
         cand.id && (cand.id.startsWith('q_') || cand.id.startsWith('coach_'))
           ? cand.id
           : `${prefix}${contentHash.slice(0, 24)}`;
+
+      // Never overwrite an edited question in Firestore unless local item is explicitly edited
+      if (
+        (existingEditedIds.has(docId) || (cand.id && existingEditedIds.has(cand.id))) &&
+        !cand.content.isManualDevEdit &&
+        !cand.content.isEdited
+      ) {
+        continue;
+      }
 
       if (
         existingIds.has(docId) ||
@@ -1361,7 +1701,7 @@ export async function syncLocalQuestionsToFirestore(
       });
     }
 
-    const BATCH_LIMIT = 100;
+    const BATCH_LIMIT = 400;
     for (let i = 0; i < toWrite.length; i += BATCH_LIMIT) {
       const slice = toWrite.slice(i, i + BATCH_LIMIT);
       const batch = writeBatch(db);
@@ -1392,13 +1732,40 @@ export async function syncFirestoreGlobalCounts(
 }
 
 /**
- * Re-Sync All Shards: Pulls all static JSON shards AND all global Firestore questions,
- * merges everything into IndexedDB and in-memory cache, and returns the updated stats.
+ * Re-Sync All Shards: Fetches all 12 Exam Mode shards (/question-bank/*.json),
+ * the Coach Mode curated bank (COACH_CURATED_BANK), and the Full Mock Exam Sets (CURATED_MOCK_EXAM_SETS),
+ * skips any deletedQuestionIds and preserves any isManualDevEdit/isEdited items,
+ * and commits to IndexedDB and Firestore using single transactions and writeBatch.
  */
 export async function reSyncAllShards(
   mode: 'exam' | 'coach' = 'exam'
-): Promise<QuestionBankSyncResult> {
-  return syncCuratedQuestionBank(mode);
+): Promise<
+  QuestionBankSyncResult & {
+    examTotal?: number;
+    coachTotal?: number;
+    mockSetsCount?: number;
+  }
+> {
+  const [examRes, coachRes, mockSets] = await Promise.all([
+    syncCuratedQuestionBank('exam'),
+    syncCuratedQuestionBank('coach'),
+    import('./examStorage')
+      .then((m) => m.syncAndGetMockExamSets())
+      .catch(() => []),
+  ]);
+
+  await Promise.all([
+    syncLocalQuestionsToFirestore('exam').catch(() => {}),
+    syncLocalQuestionsToFirestore('coach').catch(() => {}),
+  ]);
+
+  const primary = mode === 'coach' ? coachRes : examRes;
+  return {
+    ...primary,
+    examTotal: examRes.totalQuestions,
+    coachTotal: coachRes.totalQuestions,
+    mockSetsCount: Array.isArray(mockSets) ? mockSets.length : 0,
+  };
 }
 
 /**
@@ -2440,61 +2807,510 @@ export async function reportSharedQuestion(
   return true;
 }
 
-/**
- * Repair Question Bank:
- * Loops through all questions (200 per page). If a question has an invalid
- * topic or level, applies rule-guarded updates with inferred values.
- */
-export async function repairQuestionBank(
-  onProgress?: (processed: number, fixed: number) => void
-): Promise<{ totalProcessed: number; totalFixed: number }> {
-  let totalProcessed = 0;
-  let totalFixed = 0;
-  let lastVisible: DocumentSnapshot | null = null;
+export interface RepairBankReport {
+  scanned: number;
+  repaired: number;
+  duplicatesRemoved: number;
+  corruptedPurged: number;
+  totalClean: number;
+  totalProcessed: number;
+  totalFixed: number;
+}
 
-  while (true) {
-    let q = query(collection(db, 'questions'), limit(200));
-    if (lastVisible) {
-      q = query(collection(db, 'questions'), startAfter(lastVisible), limit(200));
+function isCorruptedQuestionRecord(taskType: string, content: any): boolean {
+  if (!content || typeof content !== 'object') return true;
+  if (content.deleted === true || (content.reportCount || 0) >= 3) return true;
+
+  const tType = canonicalizeTaskType(taskType);
+
+  if (tType === 'complete-words') {
+    const blanks = content.blanks;
+    if (!Array.isArray(blanks) || blanks.length < 8) return true;
+    for (const b of blanks) {
+      const ans = String(b?.answer || '').trim();
+      const pref = String(b?.prefix || '').trim();
+      if (!ans || !/^[a-zA-Z]+(?:-[a-zA-Z]+)?$/.test(ans)) return true;
+      if (!pref || !/^[a-zA-Z]+(?:-[a-zA-Z]+)?$/.test(pref)) return true;
     }
+    const text = String(content.text || '').trim();
+    if (text.length < 30) return true;
+    return false;
+  }
 
-    const snap = await getDocs(q);
-    if (snap.empty) break;
+  if (tType === 'listening-choose-response') {
+    const items =
+      Array.isArray(content.items) && content.items.length > 0
+        ? content.items
+        : Array.isArray(content.options)
+        ? [content]
+        : [];
+    if (items.length === 0) return true;
+    for (const it of items) {
+      if (!Array.isArray(it?.options) || it.options.length < 4) return true;
+    }
+    return false;
+  }
 
-    for (const docSnap of snap.docs) {
-      totalProcessed++;
-      const data = docSnap.data();
+  if (
+    tType === 'reading-academic' ||
+    tType === 'daily-life' ||
+    tType === 'listening-dialogue' ||
+    tType === 'listening-announcement' ||
+    tType === 'listening-academic-talk'
+  ) {
+    const questions = content.questions;
+    if (!Array.isArray(questions) || questions.length === 0) return true;
+    for (const q of questions) {
+      if (!Array.isArray(q?.options) || q.options.length < 4) return true;
+    }
+    return false;
+  }
 
-      const isTopicValid = isValidAcademicTopic(data.topic);
-      const isLevelValid = isValidLevel(data.level);
+  if (tType === 'build-sentence') {
+    const items =
+      Array.isArray(content.sentences) && content.sentences.length > 0
+        ? content.sentences
+        : Array.isArray(content.items) && content.items.length > 0
+        ? content.items
+        : [content];
+    if (items.length === 0) return true;
+    for (const it of items) {
+      const hasChunks =
+        (Array.isArray(it?.targetChunks) && it.targetChunks.length > 0) ||
+        (Array.isArray(it?.words) && it.words.length > 0) ||
+        (Array.isArray(it?.chunks) && it.chunks.length > 0);
+      if (!hasChunks) return true;
+    }
+    return false;
+  }
 
-      if (!isTopicValid || !isLevelValid) {
-        const updates: Record<string, any> = {};
-        if (!isTopicValid) {
-          updates.topic = normalizeTopicLabel(data.topic, data.content || data);
+  if (!validateNormalizedTask(tType, content)) return true;
+  return false;
+}
+
+/**
+ * Smart, Protective & Detailed Question Bank Audit & Repair:
+ * 1. Preserves Developer Edits (isManualDevEdit / isEdited) and Deletions (deletedQuestionIds).
+ * 2. Detects and purges broken AI-generated questions (complete-words < 8 blanks or non-alphabetic answers,
+ *    reading/listening with 0 questions or < 4 options, build-sentence with empty targetChunks/words).
+ * 3. Normalizes (including 1 Head Sentence + Blanks + 1 Tail Sentence on complete-words) and deduplicates.
+ * 4. Uses fast Firestore writeBatch(db) and single IndexedDB transactions.
+ * 5. Returns detailed report: { scanned, repaired, duplicatesRemoved, corruptedPurged, totalClean }.
+ */
+export async function repairAndAuditQuestionBank(
+  targetMode: 'exam' | 'coach' | 'both' = 'both',
+  onProgress?: (processed: number, fixed: number, status?: string) => void
+): Promise<RepairBankReport> {
+  const deletedSet = await syncDeletedQuestionsFromFirestore();
+  const editedMap = getEditedQuestionsMap();
+  const modes: Array<'exam' | 'coach'> =
+    targetMode === 'both' ? ['exam', 'coach'] : [targetMode];
+
+  let scanned = 0;
+  let repaired = 0;
+  let duplicatesRemoved = 0;
+  let corruptedPurged = 0;
+  let totalClean = 0;
+
+  for (const mode of modes) {
+    const storeName = getIdbStoreName(mode);
+    const collectionName = getFirestoreCollectionName(mode);
+    const targetMemCache = getMemoryCacheForMode(mode);
+
+    // Gather all records from IndexedDB, Firestore, and memory for this mode
+    const rawRecordsMap = new Map<
+      string,
+      {
+        docId: string;
+        raw: any;
+        fromFirestore: boolean;
+        fromIdb: boolean;
+      }
+    >();
+
+    // 1. Read IndexedDB
+    let dbInstance: IDBDatabase | null = null;
+    try {
+      dbInstance = await openIndexedDB();
+      const idbRows: any[] = await new Promise((resolve) => {
+        const tx = dbInstance!.transaction(storeName, 'readonly');
+        const req = tx.objectStore(storeName).getAll();
+        req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+        req.onerror = () => resolve([]);
+      });
+      for (const row of idbRows) {
+        const docId = String(row.id || row.content?.id || '');
+        if (docId) {
+          rawRecordsMap.set(docId, {
+            docId,
+            raw: row,
+            fromFirestore: false,
+            fromIdb: true,
+          });
         }
-        if (!isLevelValid) {
-          updates.level = normalizeDifficultyLabel(data.level || data.content?.level);
-        }
+      }
+    } catch {}
 
-        try {
-          await updateDoc(doc(db, 'questions', docSnap.id), updates);
-          totalFixed++;
-        } catch (err) {
-          console.warn(`Failed to repair doc ${docSnap.id}:`, err);
+    // 2. Read Firestore
+    try {
+      await ensureAuthenticated();
+      if (db) {
+        const snap = await getDocs(collection(db, collectionName));
+        snap.forEach((docSnap) => {
+          const docId = docSnap.id;
+          const fsData = docSnap.data();
+          const existing = rawRecordsMap.get(docId);
+          const isFsEdited = Boolean(
+            fsData?.isManualDevEdit ||
+              fsData?.isEdited ||
+              fsData?.content?.isManualDevEdit ||
+              fsData?.content?.isEdited
+          );
+          if (!existing) {
+            rawRecordsMap.set(docId, {
+              docId,
+              raw: fsData,
+              fromFirestore: true,
+              fromIdb: false,
+            });
+          } else {
+            existing.fromFirestore = true;
+            if (isFsEdited && !existing.raw?.isManualDevEdit && !existing.raw?.isEdited) {
+              existing.raw = fsData;
+            }
+          }
+        });
+      }
+    } catch {}
+
+    // 3. Also ensure in-memory items are included if not already in map
+    for (const tId of CANONICAL_TASK_IDS) {
+      const memList = targetMemCache[tId] || [];
+      for (const item of memList) {
+        const docId = String(item.questionDocId || item.id || '');
+        if (docId && !rawRecordsMap.has(docId)) {
+          rawRecordsMap.set(docId, {
+            docId,
+            raw: {
+              id: docId,
+              taskType: tId,
+              level: item.level,
+              topic: item.topic,
+              content: item,
+              mode,
+              schemaVersion: item.schemaVersion ?? CURRENT_BANK_SCHEMA_VERSION,
+              isEdited: item.isEdited,
+              isManualDevEdit: item.isManualDevEdit,
+            },
+            fromFirestore: false,
+            fromIdb: false,
+          });
         }
       }
     }
 
-    if (onProgress) {
-      onProgress(totalProcessed, totalFixed);
+    const seenSigs = new Set<string>();
+    const seenIds = new Set<string>();
+    const seenTitles = new Set<string>();
+    const cleanIdbRows: any[] = [];
+    const cleanMemByTask: Record<string, any[]> = {};
+    for (const tId of CANONICAL_TASK_IDS) {
+      cleanMemByTask[tId] = [];
     }
 
-    if (snap.docs.length < 200) break;
-    lastVisible = snap.docs[snap.docs.length - 1];
+    const firestoreBatchOps: Array<{
+      op: 'set' | 'delete';
+      docId: string;
+      payload?: any;
+    }> = [];
+
+    for (const { docId, raw, fromFirestore } of rawRecordsMap.values()) {
+      scanned++;
+      const rawContent = raw.content || raw;
+      const innerId = String(rawContent?.id || docId || '');
+      const tType = canonicalizeTaskType(
+        raw.taskType || rawContent?.taskType || raw.type || 'academic-discussion'
+      );
+
+      // Step 1: Purge any deleted or heavily reported question
+      const preSig = getQuestionContentSignature(tType, rawContent);
+      if (
+        deletedSet.has(docId) ||
+        (innerId && deletedSet.has(innerId)) ||
+        deletedSet.has(preSig) ||
+        raw.deleted === true ||
+        rawContent?.deleted === true ||
+        (raw.reportCount || 0) >= 3 ||
+        (rawContent?.reportCount || 0) >= 3
+      ) {
+        corruptedPurged++;
+        if (fromFirestore) {
+          firestoreBatchOps.push({ op: 'delete', docId });
+        }
+        continue;
+      }
+
+      // Step 1b: Strictly preserve Developer Edits (never overwrite!)
+      const isDevEdited = Boolean(
+        editedMap[docId] ||
+          (innerId && editedMap[innerId]) ||
+          raw.isManualDevEdit ||
+          raw.isEdited ||
+          rawContent?.isManualDevEdit ||
+          rawContent?.isEdited
+      );
+
+      if (isDevEdited) {
+        const override = editedMap[docId] || (innerId ? editedMap[innerId] : null);
+        const preservedContent = {
+          ...rawContent,
+          ...(override || {}),
+          id: innerId || docId,
+          questionDocId: docId,
+          taskType: tType,
+          mode,
+          level: normalizeDifficultyLabel(
+            override?.level || rawContent?.level || raw.level || 'intermediate'
+          ),
+          topic: normalizeTopicLabel(
+            override?.topic || rawContent?.topic || raw.topic || 'science-tech',
+            rawContent
+          ),
+          schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+          isEdited: true,
+          isManualDevEdit: true,
+        };
+        const devSig = getQuestionContentSignature(tType, preservedContent);
+        seenSigs.add(devSig);
+        seenIds.add(docId);
+        if (innerId) seenIds.add(innerId);
+        if (cleanMemByTask[tType]) {
+          cleanMemByTask[tType].push(preservedContent);
+        }
+        cleanIdbRows.push({
+          id: docId,
+          taskType: tType,
+          level: preservedContent.level,
+          topic: preservedContent.topic,
+          content: preservedContent,
+          isCurated: Boolean(raw.isCurated),
+          isEdited: true,
+          isManualDevEdit: true,
+          mode,
+          schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+          updatedAt: raw.updatedAt || Date.now(),
+        });
+        totalClean++;
+        continue;
+      }
+
+      // Step 2 & 3: Normalize non-edited question and check for corruption
+      const normalizedWrapper = normalizeQuestionBankItem(rawContent, tType);
+      const normalizedContent = normalizedWrapper?.content || normalizedWrapper;
+
+      if (
+        !normalizedContent ||
+        !cleanMemByTask[tType] ||
+        isCorruptedQuestionRecord(tType, normalizedContent) ||
+        !isHighQualityTask(normalizedContent, tType)
+      ) {
+        corruptedPurged++;
+        if (fromFirestore) {
+          firestoreBatchOps.push({ op: 'delete', docId });
+        }
+        continue;
+      }
+
+      const validLevel = normalizeDifficultyLabel(
+        raw.level || rawContent?.level || normalizedContent.level
+      );
+      const validTopic = normalizeTopicLabel(
+        raw.topic || rawContent?.topic || normalizedContent.topic,
+        normalizedContent
+      );
+
+      const finalContent = {
+        ...normalizedContent,
+        id: innerId || docId,
+        questionDocId: docId,
+        taskType: tType,
+        mode,
+        level: validLevel,
+        difficulty: validLevel,
+        topic: validTopic,
+        schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+      };
+
+      const sig = getQuestionContentSignature(tType, finalContent);
+      if (deletedSet.has(sig)) {
+        corruptedPurged++;
+        if (fromFirestore) {
+          firestoreBatchOps.push({ op: 'delete', docId });
+        }
+        continue;
+      }
+
+      const rawTitle = String(
+        finalContent.title ||
+          finalContent.passage?.slice(0, 80) ||
+          finalContent.text?.slice(0, 80) ||
+          finalContent.script?.slice(0, 80) ||
+          ''
+      )
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+      const titleKey = rawTitle.length >= 12 ? `${tType}::title::${rawTitle}` : '';
+
+      // Step 3b: Deduplicate by signature, ID, or normalized title
+      if (
+        seenSigs.has(sig) ||
+        seenIds.has(docId) ||
+        (innerId && seenIds.has(innerId)) ||
+        (titleKey && seenTitles.has(titleKey))
+      ) {
+        duplicatesRemoved++;
+        if (fromFirestore) {
+          firestoreBatchOps.push({ op: 'delete', docId });
+        }
+        continue;
+      }
+
+      seenSigs.add(sig);
+      seenIds.add(docId);
+      if (innerId) seenIds.add(innerId);
+      if (titleKey) seenTitles.add(titleKey);
+
+      // Check if normalization repaired topic, level, schemaVersion, or complete-words text/blanks
+      const wasTopicInvalid = !isValidAcademicTopic(raw.topic) || raw.topic !== validTopic;
+      const wasLevelInvalid = !isValidLevel(raw.level) || raw.level !== validLevel;
+      const wasSchemaOutdated =
+        (raw.schemaVersion ?? rawContent?.schemaVersion) !== CURRENT_BANK_SCHEMA_VERSION;
+      const wasCompleteWordsRepaired =
+        tType === 'complete-words' &&
+        (rawContent?.text !== finalContent.text ||
+          JSON.stringify(rawContent?.blanks) !== JSON.stringify(finalContent.blanks));
+
+      if (
+        wasTopicInvalid ||
+        wasLevelInvalid ||
+        wasSchemaOutdated ||
+        wasCompleteWordsRepaired
+      ) {
+        repaired++;
+        if (fromFirestore) {
+          firestoreBatchOps.push({
+            op: 'set',
+            docId,
+            payload: {
+              taskType: tType,
+              level: validLevel,
+              topic: validTopic,
+              content: finalContent,
+              schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+            },
+          });
+        }
+      }
+
+      cleanMemByTask[tType].push(finalContent);
+      cleanIdbRows.push({
+        id: docId,
+        taskType: tType,
+        level: validLevel,
+        topic: validTopic,
+        content: finalContent,
+        isCurated: Boolean(raw.isCurated),
+        mode,
+        schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+        updatedAt: Date.now(),
+      });
+      totalClean++;
+
+      if (onProgress && scanned % 25 === 0) {
+        onProgress(
+          scanned,
+          repaired + duplicatesRemoved + corruptedPurged,
+          `Auditing ${mode.toUpperCase()} bank (${scanned} scanned)...`
+        );
+      }
+    }
+
+    // Step 4a: Update in-memory cache atomically
+    for (const tId of CANONICAL_TASK_IDS) {
+      targetMemCache[tId] = cleanMemByTask[tId] || [];
+    }
+
+    // Step 4b: Commit clean rows to IndexedDB in a single readwrite transaction
+    if (dbInstance) {
+      try {
+        await new Promise<void>((resolve) => {
+          const tx = dbInstance!.transaction(storeName, 'readwrite');
+          const store = tx.objectStore(storeName);
+          store.clear();
+          for (const row of cleanIdbRows) {
+            store.put(row);
+          }
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        });
+      } catch (idbErr) {
+        console.warn(`Failed to commit repaired IndexedDB (${storeName}):`, idbErr);
+      }
+    }
+
+    // Step 4c: Commit all Firestore repairs & deletions using fast writeBatch(db)
+    if (db && firestoreBatchOps.length > 0) {
+      try {
+        await ensureAuthenticated();
+        const BATCH_LIMIT = 400;
+        for (let i = 0; i < firestoreBatchOps.length; i += BATCH_LIMIT) {
+          const slice = firestoreBatchOps.slice(i, i + BATCH_LIMIT);
+          const batch = writeBatch(db);
+          for (const item of slice) {
+            const ref = doc(db, collectionName, item.docId);
+            if (item.op === 'delete') {
+              batch.delete(ref);
+            } else if (item.payload) {
+              batch.set(ref, item.payload, { merge: true });
+            }
+          }
+          await batch.commit();
+        }
+      } catch (fsErr) {
+        console.warn(`Firestore batch repair notice (${collectionName}):`, fsErr);
+      }
+    }
   }
 
-  return { totalProcessed, totalFixed };
+  const totalFixed = repaired + duplicatesRemoved + corruptedPurged;
+  if (onProgress) {
+    onProgress(scanned, totalFixed, 'Audit & repair complete!');
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('toefl_bank_updated'));
+  }
+
+  return {
+    scanned,
+    repaired,
+    duplicatesRemoved,
+    corruptedPurged,
+    totalClean,
+    totalProcessed: scanned,
+    totalFixed,
+  };
+}
+
+/**
+ * Repair Question Bank (delegates to smart, protective repairAndAuditQuestionBank).
+ */
+export async function repairQuestionBank(
+  onProgress?: (processed: number, fixed: number, status?: string) => void
+): Promise<RepairBankReport> {
+  return repairAndAuditQuestionBank('both', onProgress);
 }
 
 export async function getQuestionCountsPerSection(
@@ -3277,84 +4093,18 @@ export async function exportFullDatabaseBackupJson(mockSets: any[] = []): Promis
 }
 
 /**
- * Scans Exam Bank and/or Coach Bank for duplicate content signatures or normalized titles within the same taskType
- * and removes duplicate entries from memory, IndexedDB, and Firestore.
+ * Scans Exam Bank and/or Coach Bank for duplicate content signatures, corrupted AI items, or outdated normalizations
+ * and removes/repairs entries across memory, IndexedDB, and Firestore using fast writeBatch.
  */
 export async function scanAndRemoveDuplicates(
   targetMode: 'exam' | 'coach' | 'both' = 'both'
-): Promise<{ scanned: number; removed: number }> {
-  const modes: Array<'exam' | 'coach'> =
-    targetMode === 'both' ? ['exam', 'coach'] : [targetMode];
-
-  let scanned = 0;
-  let removed = 0;
-
-  for (const mode of modes) {
-    await getQuestionBankStats(mode);
-    const memCache = getMemoryCacheForMode(mode);
-
-    for (const tId of CANONICAL_TASK_IDS) {
-      const list = memCache[tId] || [];
-      const seenSigs = new Set<string>();
-      const seenTitles = new Set<string>();
-      const uniqueList: any[] = [];
-      const duplicatesToRemove: any[] = [];
-
-      for (const item of list) {
-        scanned++;
-        const sig = getQuestionContentSignature(tId, item);
-        const rawTitle = String(
-          item.title ||
-            item.passage?.slice(0, 80) ||
-            item.text?.slice(0, 80) ||
-            item.script?.slice(0, 80) ||
-            ''
-        )
-          .trim()
-          .toLowerCase()
-          .replace(/\s+/g, ' ');
-
-        const titleKey = rawTitle.length >= 12 ? `${tId}::title::${rawTitle}` : '';
-
-        if (seenSigs.has(sig) || (titleKey && seenTitles.has(titleKey))) {
-          duplicatesToRemove.push(item);
-        } else {
-          seenSigs.add(sig);
-          if (titleKey) seenTitles.add(titleKey);
-          uniqueList.push(item);
-        }
-      }
-
-      if (duplicatesToRemove.length > 0) {
-        memCache[tId] = uniqueList;
-        for (const dup of duplicatesToRemove) {
-          removed++;
-          const dupId = String(dup.questionDocId || dup.id || '');
-          if (dupId) {
-            try {
-              const dbInstance = await openIndexedDB();
-              const storeName = getIdbStoreName(mode);
-              const tx = dbInstance.transaction(storeName, 'readwrite');
-              tx.objectStore(storeName).delete(dupId);
-            } catch {}
-            if (db) {
-              try {
-                await ensureAuthenticated();
-                const colName = getFirestoreCollectionName(mode);
-                await deleteDoc(doc(db, colName, dupId));
-              } catch {}
-            }
-          }
-        }
-      }
-    }
-  }
-
-  if (removed > 0 && typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('toefl_bank_updated'));
-  }
-
-  return { scanned, removed };
+): Promise<RepairBankReport & { removed: number }> {
+  const report = await repairAndAuditQuestionBank(targetMode);
+  return {
+    ...report,
+    removed: report.duplicatesRemoved + report.corruptedPurged,
+  };
 }
+
 
 

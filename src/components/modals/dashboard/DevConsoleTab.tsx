@@ -32,6 +32,8 @@ import {
   saveQuestionToSharedBank,
   exportFullDatabaseBackupJson,
   scanAndRemoveDuplicates,
+  repairAndAuditQuestionBank,
+  reSyncAllShards,
   canonicalizeTaskType,
   incrementAiGeneratedCount,
 } from '../../../utils/questionBankStorage';
@@ -331,18 +333,16 @@ export const DevConsoleTab: React.FC<DevConsoleTabProps> = ({
     }
   };
 
-  // Duplicate Scanner Handler
+  // Repair, Audit & Duplicate Scanner Handler
   const handleScanDuplicates = async () => {
     if (scanningDuplicates) return;
     setScanningDuplicates(true);
     try {
-      const { scanned, removed } = await scanAndRemoveDuplicates('both');
+      const res = await repairAndAuditQuestionBank('both');
       setRefreshTick((t) => t + 1);
       onBankModified?.();
       showBanner(
-        removed > 0
-          ? `Scanned ${scanned} questions across Exam & Coach banks and removed ${removed} duplicate(s)!`
-          : `Scanned ${scanned} questions across Exam & Coach banks — 0 duplicates found! Database is 100% clean.`
+        `🛠️ Bank Repair & Audit Complete — Scanned: ${res.scanned} | Repaired: ${res.repaired} | Duplicates Removed: ${res.duplicatesRemoved} | Corrupted Purged: ${res.corruptedPurged} | Total Clean: ${res.totalClean}`
       );
     } finally {
       setScanningDuplicates(false);

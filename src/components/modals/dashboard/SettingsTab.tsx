@@ -41,6 +41,7 @@ import {
   syncFirestoreGlobalCounts,
   getQuestionBankStats,
   repairQuestionBank,
+  repairAndAuditQuestionBank,
   isEligibleDevUsername,
   isDevAdminUnlocked,
   unlockDevAdmin,
@@ -305,14 +306,17 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   };
 
   const handleSyncAndCleanBank = async () => {
-    setDataMessage({ success: true, text: `Re-syncing ${practiceMode === 'coach' ? 'Coach & Marathon' : 'Exam Mode'} question shards & pulling global Firestore questions...` });
+    setDataMessage({
+      success: true,
+      text: 'Re-syncing all 12 Exam Mode shards, Coach & Marathon bank, and Full Mock Exam Sets (preserving Developer edits & deletions)...',
+    });
     const purgeCount = await purgeLowQualityCache();
     const syncRes = await reSyncAllShards(practiceMode);
     const updated = await getQuestionBankStats(practiceMode);
     setBankStats(updated);
     setDataMessage({
       success: true,
-      text: `Re-Sync complete! Pulled ${syncRes.totalQuestions} verified questions globally (purged ${purgeCount} stubs).`,
+      text: `Re-Sync complete! Synced ${syncRes.examTotal ?? syncRes.totalQuestions} Exam questions, ${syncRes.coachTotal ?? 0} Coach questions, and ${syncRes.mockSetsCount ?? 3} Mock Exam Sets (purged ${purgeCount} stubs).`,
     });
   };
 
@@ -322,16 +326,16 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   const handleRepairBank = async () => {
     if (isRepairingBank) return;
     setIsRepairingBank(true);
-    setRepairStatus('Repairing question bank topics and levels...');
+    setRepairStatus('Auditing & repairing question bank...');
     try {
-      const res = await repairQuestionBank((processed, fixed) => {
-        setRepairStatus(`Scanned ${processed} questions, fixed ${fixed}...`);
+      const res = await repairAndAuditQuestionBank('both', (processed, fixed, status) => {
+        setRepairStatus(status || `Scanned ${processed} questions, fixed ${fixed}...`);
       });
       const updated = await getQuestionBankStats(practiceMode);
       setBankStats(updated);
       setDataMessage({
         success: true,
-        text: `Bank repair complete! Scanned ${res.totalProcessed} questions and fixed ${res.totalFixed} outdated items.`,
+        text: `Bank Repair & Audit Complete — Scanned: ${res.scanned} | Repaired: ${res.repaired} | Duplicates Removed: ${res.duplicatesRemoved} | Corrupted Purged: ${res.corruptedPurged} | Total Clean: ${res.totalClean}`,
       });
     } catch (err: any) {
       setDataMessage({

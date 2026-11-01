@@ -996,12 +996,12 @@ export async function handleGenerateTask(taskType: string, level: string, topic:
         if (isCoachMode) {
           return `You are an official ETS 2026 TOEFL iBT Coach & Marathon test creator. Create a Marathon "Complete the Words" (C-Test) passage for level: ${levelDesc}. Topic: ${top}.
 COACH & MARATHON SPECIFICATIONS:
-Write a natural, grammatically flawless, 100% plain-English academic paragraph of 170–210 words (6–8 sentences). Do NOT insert any brackets [ ], underscores, or blanks anywhere in the text—write normal, properly spelled English words only.
+Write a concise academic paragraph consisting of: (1) ONE introductory head sentence (~12–18 words), (2) ONE or TWO middle sentences (~55–65 words total) that will hold the blanks, and (3) ONE concluding tail sentence (~12–18 words). Write 100% plain English with ZERO brackets [ ] or underscores.
 Return ONLY this exact JSON schema: {"title": "Academic Topic Title", "passage": "A 100% plain-English academic paragraph with ZERO brackets [ ] and flawless spelling."}`;
         }
         return `You are an official ETS 2026 TOEFL iBT test content creator. Create an authentic TOEFL Reading "Complete the Words" (C-Test) passage for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 TOEFL iBT SPECIFICATIONS:
-Write a natural, grammatically flawless, 100% plain-English academic paragraph of 75–95 words (4–5 sentences). Do NOT insert any brackets [ ], underscores, or blanks anywhere in the text—write normal, properly spelled English words only.
+Write a concise academic paragraph consisting of: (1) ONE introductory head sentence (~12–18 words), (2) ONE or TWO middle sentences (~22–28 words total) that will hold the blanks, and (3) ONE concluding tail sentence (~12–18 words). Write 100% plain English with ZERO brackets [ ] or underscores.
 Return ONLY this exact JSON schema: {"title": "Academic Topic Title", "passage": "A 100% plain-English academic paragraph with ZERO brackets [ ] and flawless spelling."}`;
       case 'daily-life':
       case 'daily_life':
@@ -1308,7 +1308,7 @@ Return JSON format: {"title": "Academic Discussion Board", "professorName": "Pro
         });
 
         clearProviderCooldown(candidate.provider);
-        return { ...result, isFallback: false, modelUsed };
+        return { ...result, isFallback: false, modelUsed, providerUsed: candidate.provider };
       } else {
         const { text, modelUsed } = await callChatWithHealing({
           provider: candidate.provider,
@@ -1325,7 +1325,7 @@ Return JSON format: {"title": "Academic Discussion Board", "professorName": "Pro
         const normalized = normalizeTask(taskType, { ...parsed, coachMode: isCoachMode });
         const result = schema.parse(normalized);
         clearProviderCooldown(candidate.provider);
-        return { ...result, isFallback: false, modelUsed };
+        return { ...result, isFallback: false, modelUsed, providerUsed: candidate.provider };
       }
     } catch (candidateErr: any) {
       lastError = candidateErr;

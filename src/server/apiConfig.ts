@@ -35,15 +35,20 @@ function getHeader(headers: any, name: string): string | undefined {
 export function getApiConfig(headers: any = {}, body: any = {}): ApiConfig {
   const b = body || {};
 
-  // Provider resolution
-  let rawProvider = (getHeader(headers, 'x-api-provider') || b.provider || 'auto').trim().toLowerCase();
+  // Provider resolution (explicit body provider takes priority when a worker specifies a target provider)
+  let rawProvider = (b.provider || getHeader(headers, 'x-api-provider') || 'auto').trim().toLowerCase();
   let provider = KNOWN_PROVIDERS.has(rawProvider) ? rawProvider : 'auto';
 
   // API Key resolution
+  const bodyKey =
+    typeof b.apiKey === 'string' && b.apiKey.trim()
+      ? b.apiKey.trim()
+      : typeof b.customApiKey === 'string' && b.customApiKey.trim()
+      ? b.customApiKey.trim()
+      : '';
   const xApiKey = getHeader(headers, 'x-api-key')?.trim();
   const xGeminiKey = (provider === 'gemini' || provider === 'auto') ? getHeader(headers, 'x-gemini-api-key')?.trim() : undefined;
-  const bodyKey = typeof b.apiKey === 'string' ? b.apiKey.trim() : '';
-  const apiKey = xApiKey || xGeminiKey || bodyKey;
+  const apiKey = bodyKey || xApiKey || xGeminiKey || '';
   let effectiveApiKey = apiKey;
 
   // Optional Voice Key & TTS Provider Settings
@@ -101,30 +106,35 @@ export function getApiConfig(headers: any = {}, body: any = {}): ApiConfig {
   const sttModel = (getHeader(headers, 'x-api-model-stt') || b.sttModel || '').trim();
   const ttsModel = (getHeader(headers, 'x-api-model-tts') || b.ttsModel || '').trim();
 
-  // Collect all multi-provider keys passed via headers or body
+  // Collect multi-provider keys passed via headers or body
   const availableKeys: Record<string, string> = {};
-  const KNOWN_ROUTED = ['gemini', 'groq', 'openai', 'anthropic', 'openrouter', 'nvidia', 'deepseek', 'xai'];
-  for (const p of KNOWN_ROUTED) {
-    const k =
-      getHeader(headers, `x-api-key-${p}`) ||
-      (b.availableKeys && b.availableKeys[p]) ||
-      (b.providerKeys && b.providerKeys[p]) ||
-      (b.options?.providerKeys && b.options.providerKeys[p]);
-    if (k && typeof k === 'string' && k.trim()) {
-      availableKeys[p] = k.trim();
+  const strictProvider = Boolean(b.strictProvider || b.options?.strictProvider);
+  if (strictProvider && effectiveApiKey && provider && provider !== 'auto') {
+    availableKeys[provider] = effectiveApiKey;
+  } else {
+    const KNOWN_ROUTED = ['gemini', 'groq', 'openai', 'anthropic', 'openrouter', 'nvidia', 'deepseek', 'xai'];
+    for (const p of KNOWN_ROUTED) {
+      const k =
+        getHeader(headers, `x-api-key-${p}`) ||
+        (b.availableKeys && b.availableKeys[p]) ||
+        (b.providerKeys && b.providerKeys[p]) ||
+        (b.options?.providerKeys && b.options.providerKeys[p]);
+      if (k && typeof k === 'string' && k.trim()) {
+        availableKeys[p] = k.trim();
+      }
     }
-  }
-  const xGroq = getHeader(headers, 'x-groq-key');
-  if (xGroq && xGroq.trim() && !availableKeys.groq) {
-    availableKeys.groq = xGroq.trim();
-  }
-  const xGemini = getHeader(headers, 'x-gemini-api-key');
-  if (xGemini && xGemini.trim() && !availableKeys.gemini) {
-    availableKeys.gemini = xGemini.trim();
-  }
-  if (effectiveApiKey && provider && provider !== 'auto') {
-    if (!availableKeys[provider]) {
-      availableKeys[provider] = effectiveApiKey;
+    const xGroq = getHeader(headers, 'x-groq-key');
+    if (xGroq && xGroq.trim() && !availableKeys.groq) {
+      availableKeys.groq = xGroq.trim();
+    }
+    const xGemini = getHeader(headers, 'x-gemini-api-key');
+    if (xGemini && xGemini.trim() && !availableKeys.gemini) {
+      availableKeys.gemini = xGemini.trim();
+    }
+    if (effectiveApiKey && provider && provider !== 'auto') {
+      if (!availableKeys[provider]) {
+        availableKeys[provider] = effectiveApiKey;
+      }
     }
   }
 

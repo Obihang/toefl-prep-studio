@@ -15,7 +15,8 @@ export const COACH_CURATED_BANK: Record<string, any[]> = {
       level: 'advanced',
       difficulty: 'advanced',
       topic: 'science-tech',
-      text: 'Along abyssal mid-ocean ridges where sunlight never penetrates, superheated mineral-rich fluids erupt from tectonic fissures to form hydrothermal chimneys. Rather th[an] relying o[n] solar radia[tion] to synth[esize] organic comp[ounds], specialized microor[ganisms] known a[s] chemoautotrophs har[ness] chemical ene[rgy] by oxid[izing] dissolved hydr[ogen] sulfide a[nd] volcanic met[hane]. These pri[mary] producers esta[blish] dense, self-su[staining] biological commu[nities] that thr[ive] under crus[hing] hydrostatic pre[ssure] and st[eep] thermal grad[ients]. Symbiotic gi[ant] tube wo[rms], blind ve[nt] shrimp, a[nd] bivalve mol[lusks] depend enti[rely] upon intracellu[lar] bacteria housed within their specialized gill tissues to convert toxic volcanic emissions into vital nutritional carbohydrates.',
+      text: 'Along abyssal mid-ocean ridges where sunlight never penetrates, superheated mineral-rich fluids erupt from tectonic fissures to form hydrothermal chimneys. Rather th[an] relying o[n] solar radia[tion] to synth[esize] organic comp[ounds], specialized microor[ganisms] known a[s] chemoautotrophs har[ness] chemical ene[rgy] by oxid[izing] dissolved hydr[ogen] sulfide a[nd] volcanic met[hane]. These pri[mary] producers esta[blish] dense, self-su[staining] biological commu[nities] that thr[ive] under crus[hing] hydrostatic pre[ssure] and st[eep] thermal grad[ients]. Symbiotic gi[ant] tube wo[rms], blind ve[nt] shrimp, a[nd] bivalve mol[lusks] depend enti[rely] upon intracellu[lar] bacteria housed within their specialized gill tissues to convert toxic volcanic emissions into vital nutritional carbohydrates. Consequently, these isolated abyssal ecosystems demonstrate that complex marine life can flourish independently of surface photosynthesis.',
+      totalBlanks: 25,
       explanation:
         'Marathon C-Test (25 blanks): Tests academic morphology and collocations in deep-sea marine biology and biochemistry.',
     },
@@ -28,9 +29,10 @@ export const COACH_CURATED_BANK: Record<string, any[]> = {
       level: 'upper-intermediate',
       difficulty: 'upper-intermediate',
       topic: 'business-economics',
-      text: 'Contemporary digital marketplaces increasingly deploy predictive machine-learning algorithms to adjust retail prices dynamically in real time. By contin[uously] analyzing brow[sing] histories, geogr[aphic] locations, a[nd] device charact[eristics], automated pri[cing] engines est[imate] each cons[umer] willingness t[o] pay wi[th] remarkable prec[ision]. Economists obs[erve] that personalized tar[iffs] can exp[and] market acc[ess] for price-se[nsitive] buyers wh[ile] extracting max[imum] surplus fr[om] affluent shop[pers]. However, regu[latory] agencies caution th[at] opaque algor[ithmic] coordination am[ong] competing plat[forms] may tacitly stabilize supra-competitive prices without explicit human collusion.',
+      text: 'Contemporary digital marketplaces increasingly deploy predictive machine-learning algorithms to adjust retail prices dynamically in real time. By contin[uously] analyzing brow[sing] histories, geogr[aphic] locations, a[nd] device charact[eristics], automated pri[cing] engines est[imate] each cons[umer] willingness t[o] pay wi[th] remarkable prec[ision]. Economists obs[erve] that person[alized] tariffs c[an] expand mar[ket] access f[or] price-sensitive buy[ers] while extra[cting] maximum sur[plus] from affl[uent] shoppers. How[ever], regulatory agen[cies] caution th[at] opaque algor[ithmic] coordination am[ong] competing platforms may tacitly stabilize supra-competitive prices without explicit human collusion. Consequently, antitrust scholars increasingly advocate algorithmic auditing frameworks to safeguard consumer welfare in digital markets.',
+      totalBlanks: 25,
       explanation:
-        'Marathon C-Test (24 blanks): Focuses on microeconomic terminology, regulatory policy, and algorithmic commerce.',
+        'Marathon C-Test (25 blanks): Focuses on microeconomic terminology, regulatory policy, and algorithmic commerce.',
     },
     {
       id: 'coach_cw_003',
@@ -41,9 +43,10 @@ export const COACH_CURATED_BANK: Record<string, any[]> = {
       level: 'intermediate',
       difficulty: 'intermediate',
       topic: 'environment',
-      text: 'Beneath the floor of boreal and temperate forests lies a vast subterranean web of symbiotic fungal threads called mycelia. These micro[scopic] filaments wrap aro[und] tree ro[ot] tips, significantly expa[nding] the sur[face] area avai[lable] for abso[rbing] phosphorus, nitr[ogen], and tra[ce] minerals fr[om] nutrient-poor so[ils]. In exch[ange] for th[ese] essential min[eral] nutrients, host tr[ees] transfer photosy[nthetic] sugars do[wn] into th[e] fungal net[work], locking subst[antial] quantities o[f] atmospheric car[bon] deep underground. Recent ecological studies demonstrate that intact fungal networks also transport chemical warning signals between neighboring trees during insect outbreaks.',
+      text: 'Beneath the floor of boreal and temperate forests lies a vast subterranean web of symbiotic fungal threads called mycelia. These micro[scopic] filaments wr[ap] around tr[ee] root ti[ps], significantly expa[nding] the sur[face] area avai[lable] for abso[rbing] phosphorus, nitr[ogen], and tr[ace] minerals fr[om] nutrient-poor so[ils]. In exch[ange] for th[ese] essential min[eral] nutrients, ho[st] trees tran[sfer] photosynthetic sug[ars] down in[to] the fun[gal] network, loc[king] substantial quant[ities] of atmos[pheric] carbon de[ep] within subter[ranean] mineral horizons. Recent ecological studies demonstrate that intact fungal networks also transport chemical warning signals between neighboring trees during insect outbreaks.',
+      totalBlanks: 25,
       explanation:
-        'Marathon C-Test (22 blanks): Covers forest ecology, symbiotic nutrient exchange, and carbon sequestration.',
+        'Marathon C-Test (25 blanks): Covers forest ecology, symbiotic nutrient exchange, and carbon sequestration.',
     },
   ],
 
