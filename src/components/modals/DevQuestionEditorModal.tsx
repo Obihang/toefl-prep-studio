@@ -167,6 +167,7 @@ export const DevQuestionEditorModal: React.FC<DevQuestionEditorModalProps> = ({
         difficulty: level,
         topic,
         isEdited: true,
+        isManualDevEdit: true,
         updatedAt: Date.now(),
       };
 

@@ -126,6 +126,7 @@ const CoachBlueprintSchema = z.array(
 const Schemas = {
   completeWords: z.object({
     title: z.string(),
+    passage: z.string().optional(),
     text: z.string(),
     totalBlanks: z.number(),
     blanks: z.any().optional(),
@@ -179,6 +180,7 @@ const Schemas = {
         prepTimeSeconds: z.number(),
         responseTimeSeconds: z.number(),
         suggestedPoints: z.array(z.string()),
+        sampleAnswer: z.string().optional(),
         speakingFormula: z.array(z.string()).optional(),
         topicVocabulary: z.array(z.string()).optional(),
         sentenceStarters: z.array(z.string()).optional(),
@@ -194,6 +196,7 @@ const Schemas = {
         frameSuffix: z.string().optional().default('.'),
         targetChunks: z.array(z.string()),
         distractorChunks: z.array(z.string()).optional().default([]),
+        distractorWord: z.string().optional(),
         words: z.array(z.string()),
         targetSentence: z.string().optional(),
         answer: z.string(),
@@ -394,14 +397,21 @@ function normalizeCompleteWords(data: any) {
   if (!data || typeof data !== 'object') throw new Error('AI response is not an object');
   const title = String(data.title || 'Complete the Words').trim();
   if (!title) throw new Error('Complete the Words missing title');
-  let rawText = String(data.text || '').trim();
+  const rawText = String(data.passage || data.text || '').trim();
   if (!rawText || rawText.split(/\s+/).filter(Boolean).length < 25) {
-    throw new Error('AI response missing valid complete_words paragraph text');
+    throw new Error('AI response missing valid complete_words paragraph passage');
   }
 
-  const normalized = normalizeCompleteWordsTask({ title, text: rawText, totalBlanks: data.totalBlanks });
+  const normalized = normalizeCompleteWordsTask({
+    title,
+    passage: rawText,
+    text: rawText,
+    totalBlanks: data.totalBlanks,
+    coachMode: Boolean(data.coachMode),
+  });
   return {
     title: normalized.title,
+    passage: normalized.passage,
     text: normalized.text,
     totalBlanks: normalized.totalBlanks,
     blanks: normalized.blanks,
@@ -596,11 +606,17 @@ function normalizeSpeakingInterview(data: any) {
     const suggestedPoints = Array.isArray(q.suggestedPoints) && q.suggestedPoints.length > 0
       ? q.suggestedPoints.map(String).filter(Boolean)
       : ['Provide clear examples', 'Support your viewpoint'];
+    const sampleAnswer = typeof q.sampleAnswer === 'string' && q.sampleAnswer.trim()
+      ? q.sampleAnswer.trim()
+      : typeof q.modelAnswer === 'string' && q.modelAnswer.trim()
+      ? q.modelAnswer.trim()
+      : undefined;
     return {
       question: qText,
       prepTimeSeconds: prepTime,
       responseTimeSeconds: respTime,
       suggestedPoints,
+      ...(sampleAnswer ? { sampleAnswer } : {}),
       ...(Array.isArray(q.speakingFormula) ? { speakingFormula: q.speakingFormula.map(String).filter(Boolean) } : {}),
       ...(Array.isArray(q.topicVocabulary) ? { topicVocabulary: q.topicVocabulary.map(String).filter(Boolean) } : {}),
       ...(Array.isArray(q.sentenceStarters) ? { sentenceStarters: q.sentenceStarters.map(String).filter(Boolean) } : {}),
@@ -630,7 +646,11 @@ function normalizeBuildSentence(data: any) {
       throw new Error(`Build sentence item ${idx + 1} missing explanation`);
     }
   });
-  const normalized = normalizeBuildSentenceTask({ title, items: rawItems });
+  const normalized = normalizeBuildSentenceTask({
+    title,
+    items: rawItems,
+    coachMode: Boolean(data.coachMode),
+  });
   return {
     title: normalized.title,
     items: normalized.items.map((it) => ({
@@ -639,6 +659,7 @@ function normalizeBuildSentence(data: any) {
       frameSuffix: it.frameSuffix,
       targetChunks: it.targetChunks,
       distractorChunks: it.distractorChunks,
+      ...(it.distractorWord ? { distractorWord: it.distractorWord } : {}),
       words: it.words,
       targetSentence: it.targetSentence,
       answer: it.answer,
@@ -973,22 +994,15 @@ export async function handleGenerateTask(taskType: string, level: string, topic:
       case 'complete-words':
       case 'complete_words':
         if (isCoachMode) {
-          return `You are an official ETS 2026 TOEFL iBT Coach & Marathon test creator. Create a Marathon "Complete the Words" (C-Test) item for level: ${levelDesc}. Topic: ${top}.
+          return `You are an official ETS 2026 TOEFL iBT Coach & Marathon test creator. Create a Marathon "Complete the Words" (C-Test) passage for level: ${levelDesc}. Topic: ${top}.
 COACH & MARATHON SPECIFICATIONS:
-1. Write a cohesive, multi-paragraph academic passage of strictly 160 to 200 words (6 to 8 sentences) with ZERO brackets [ ].
-2. Sentence 1 MUST be a clear introductory sentence (12-16 words).
-3. Set "totalBlanks": 22 so the C-Test engine blanks every 2nd word after Sentence 1 for 22 blanks.
-Return JSON format: {"title": "Marathon Academic Topic Title", "text": "The full 160-200 word plain-English academic passage with ZERO brackets", "totalBlanks": 22}`;
+Write a natural, grammatically flawless, 100% plain-English academic paragraph of 170–210 words (6–8 sentences). Do NOT insert any brackets [ ], underscores, or blanks anywhere in the text—write normal, properly spelled English words only.
+Return ONLY this exact JSON schema: {"title": "Academic Topic Title", "passage": "A 100% plain-English academic paragraph with ZERO brackets [ ] and flawless spelling."}`;
         }
-        return `You are an official ETS 2026 TOEFL iBT test content creator. Create an authentic TOEFL Reading "Complete the Words" (C-Test) item for a student at level: ${levelDesc}. Topic: ${top}.
+        return `You are an official ETS 2026 TOEFL iBT test content creator. Create an authentic TOEFL Reading "Complete the Words" (C-Test) passage for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 TOEFL iBT SPECIFICATIONS:
-1. Write a cohesive, natural, 100% plain-English academic paragraph of strictly 70 to 90 words (exactly 4 to 5 sentences total) with ZERO brackets [ ].
-2. Sentence 1 MUST be a clear introductory sentence (10-15 words).
-3. Sentences 2 and 3 contain the 10 consecutive every-2nd-word blanks.
-4. Sentences 4 and 5 MUST be a natural, informative 1–2 sentence concluding tail at the end (15–25 words total) after the 10th blank.
-5. FORBIDDEN: Do NOT insert any brackets [ ] or split any words into prefixes/suffixes! Return pure, pristine plain English text.
-6. FORBIDDEN: Do NOT write repetitive filler sentences or artificial buzzword lists. Write natural, authentic ETS TOEFL prose.
-Return JSON format: {"title": "Short Academic Topic Title", "text": "The full 70-90 word plain-English academic paragraph with ZERO brackets", "totalBlanks": 10}`;
+Write a natural, grammatically flawless, 100% plain-English academic paragraph of 75–95 words (4–5 sentences). Do NOT insert any brackets [ ], underscores, or blanks anywhere in the text—write normal, properly spelled English words only.
+Return ONLY this exact JSON schema: {"title": "Academic Topic Title", "passage": "A 100% plain-English academic paragraph with ZERO brackets [ ] and flawless spelling."}`;
       case 'daily-life':
       case 'daily_life':
         if (isCoachMode) {
@@ -997,8 +1011,9 @@ COACH & MARATHON SPECIFICATIONS:
 1. Choose an authentic daily life format (formatType): "notice", "email", "text-chain", "menu", "schedule", "invoice", or "social-post".
 2. Write a detailed realistic text of 110 to 160 words (contentText).
 3. Include EXACTLY 4 multiple-choice questions covering main_purpose, factual_detail, negative_factual, and inference.
-4. Include a "hint" field on each question pointing to the exact line/section clue and strategy.
-Return JSON format: {"title": "Title", "formatType": "email", "context": "Campus context description", "contentText": "Full text...", "questions": [{"q": "Question?", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 0, "why": "Explanation...", "questionType": "main_purpose", "hint": "Strategy & target clue in the document..."}]}`;
+4. STRICT ANSWER-KEY VERIFICATION: Verify that \`options[answer]\` is 100% supported by \`contentText\` and matches the exact option quoted in \`why\`, and that all 3 distractor options are clearly false or unsupported.
+5. Include a "hint" field on each question pointing to the exact line/section clue and strategy.
+Return JSON format: {"title": "Title", "formatType": "email", "context": "Campus context description", "contentText": "Full text...", "questions": [{"q": "Question?", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 0, "why": "Explanation quoting the exact correct option text...", "questionType": "main_purpose", "hint": "Strategy & target clue in the document..."}]}`;
         }
         return `You are an official ETS 2026 TOEFL iBT test creator. Create a TOEFL Reading "Read in Daily Life" item for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 TOEFL iBT SPECIFICATIONS (Official PDF Page 6):
@@ -1013,7 +1028,8 @@ STRICT 2026 TOEFL iBT SPECIFICATIONS (Official PDF Page 6):
    - "factual_detail" (skimming and scanning for specific nonlinear information)
    - "idiomatic_meaning" (understanding informal or telegraphic language in context)
    - "negative_factual" (identifying which option is NOT true or EXCEPT)
-Return JSON format: {"title": "Title", "formatType": "notice", "context": "Campus context description", "contentText": "Full text...", "questions": [{"q": "What is the main purpose of this notice?", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 0, "why": "Explanation...", "questionType": "main_purpose"}, {"q": "What can be inferred about...?", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 2, "why": "Explanation...", "questionType": "inference"}]}`;
+5. STRICT ANSWER-KEY VERIFICATION: Verify that \`options[answer]\` is 100% supported by \`contentText\` and matches the option quoted in \`why\`, and that all 3 distractor options are clearly false or unsupported.
+Return JSON format: {"title": "Title", "formatType": "notice", "context": "Campus context description", "contentText": "Full text...", "questions": [{"q": "What is the main purpose of this notice?", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 0, "why": "Explanation quoting the exact correct option...", "questionType": "main_purpose"}, {"q": "What can be inferred about...?", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 2, "why": "Explanation quoting the exact correct option...", "questionType": "inference"}]}`;
       case 'reading-passage':
       case 'reading_academic':
       case 'reading-academic': {
@@ -1022,8 +1038,9 @@ Return JSON format: {"title": "Title", "formatType": "notice", "context": "Campu
 COACH & MARATHON SPECIFICATIONS:
 1. Write a 350 to 420 word multi-paragraph university-level academic passage (4 focused paragraphs).
 2. Provide EXACTLY 8 multiple-choice questions covering ALL official reading question types: Factual Detail, Negative Factual (EXCEPT/NOT), Vocabulary in Context, Inference, Rhetorical Purpose, Sentence Relationship, and Main Idea Summary.
-3. Every question MUST include a "hint" field pointing to the exact paragraph/sentence clue and explaining the strategy for solving that question type.
-Return JSON format: {"title": "Passage Title", "passage": "350-420 word passage...", "questions": [{"q": "Question prompt?", "options": ["Unique Option A", "Unique Option B", "Unique Option C", "Unique Option D"], "answer": 2, "why": "Detailed explanation...", "questionType": "Inference", "hint": "Paragraph 2 Clue & Strategy..."}]}`;
+3. STRICT ANSWER-KEY VERIFICATION: Verify that \`options[answer]\` is 100% supported by the passage and matches the option quoted in \`why\`, and that all 3 distractor options are clearly false or unsupported.
+4. Every question MUST include a "hint" field pointing to the exact paragraph/sentence clue and explaining the strategy for solving that question type.
+Return JSON format: {"title": "Passage Title", "passage": "350-420 word passage...", "questions": [{"q": "Question prompt?", "options": ["Unique Option A", "Unique Option B", "Unique Option C", "Unique Option D"], "answer": 2, "why": "Detailed explanation quoting the exact correct option...", "questionType": "Inference", "hint": "Paragraph 2 Clue & Strategy..."}]}`;
         }
         const hasSpecificFocus = promptData?.questionSkillFocus && promptData.questionSkillFocus !== 'all';
         const skillDirective = hasSpecificFocus
@@ -1040,8 +1057,8 @@ ${skillDirective}
 STRICT 2026 TOEFL iBT SPECIFICATIONS:
 1. Write a 180-210 word university-level academic passage (3 focused, cohesive paragraphs). Avoid repetitive phrasing or redundant concluding summaries.
 2. Provide EXACTLY 5 multiple-choice questions in a randomized sequence of question types (1 Factual Detail, 1 Negative Factual EXCEPT/NOT, 1 Vocabulary in Context, 1 Inference, 1 Rhetorical Purpose / Relationship).
-3. Every question MUST have 4 distinct, unique options (\`options.length === 4\`), \`answer\` (0..3, varied across questions), \`questionType\` ("Factual Detail", "Negative Factual (EXCEPT/NOT)", "Vocabulary in Context", "Inference", or "Rhetorical Purpose"), and a detailed \`why\` explanation that explicitly verifies why the option at index \`answer\` is right.
-Return JSON format: {"title": "Passage Title", "passage": "180-210 word passage...", "questions": [{"q": "Question prompt?", "options": ["Unique Option A", "Unique Option B", "Unique Option C", "Unique Option D"], "answer": 2, "why": "Detailed explanation verifying why the option at index 2 is correct...", "questionType": "Inference"}]}`;
+3. STRICT ANSWER-KEY VERIFICATION: Every question MUST have 4 distinct, unique options (\`options.length === 4\`), \`answer\` (0..3, varied across questions), \`questionType\`, and a detailed \`why\` explanation that explicitly quotes \`options[answer]\` and verifies that it is 100% supported by the passage while all 3 distractor options are clearly false or unsupported.
+Return JSON format: {"title": "Passage Title", "passage": "180-210 word passage...", "questions": [{"q": "Question prompt?", "options": ["Unique Option A", "Unique Option B", "Unique Option C", "Unique Option D"], "answer": 2, "why": "Detailed explanation quoting Unique Option C and verifying why index 2 is correct...", "questionType": "Inference"}]}`;
       }
       case 'listening-choose-response':
       case 'listening_choose_response':
@@ -1049,32 +1066,32 @@ Return JSON format: {"title": "Passage Title", "passage": "180-210 word passage.
           return `You are an official ETS 2026 TOEFL iBT Coach & Marathon test creator. Create an 8-item TOEFL Listening "Listen & Choose a Response" practice set for level: ${levelDesc}. Topic: ${top}.
 COACH & MARATHON SPECIFICATIONS:
 1. Provide EXACTLY 8 independent short items in the \`items\` array.
-2. Each item's \`audioPrompt\` MUST be a natural 1-sentence campus/everyday question or statement (6-15 words).
-3. Include a \`coachTip\` field on each item explaining the pragmatic intent, idiom, or indirect speech act.
-Return JSON format: {"title": "Marathon Pragmatics Set", "category": "Campus Life", "items": [{"audioPrompt": "Short 6-15 word question?", "speakerName": "Sarah", "speakerGender": "female", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 1, "why": "Direct and natural response.", "coachTip": "Pragmatic clue explaining indirect speech act..."}]}`;
+2. Each item's \`audioPrompt\` MUST be a natural spoken 1-sentence campus/everyday question or statement (6-15 words) with explicit gendered \`speakerName\` and \`speakerGender\` ('male' or 'female').
+3. STRICT ANSWER-KEY VERIFICATION: Verify that \`options[answer]\` is the single natural reply and matches \`why\`, while all 3 distractors are clearly inappropriate.
+4. Include a \`coachTip\` field on each item explaining the pragmatic intent, idiom, or indirect speech act.
+Return JSON format: {"title": "Marathon Pragmatics Set", "category": "Campus Life", "items": [{"audioPrompt": "Short 6-15 word question?", "speakerName": "Sarah", "speakerGender": "female", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 1, "why": "Direct and natural response matching Option B.", "coachTip": "Pragmatic clue explaining indirect speech act..."}]}`;
         }
         return `You are an official ETS 2026 TOEFL iBT test content creator. Create a 5-item TOEFL Listening "Listen & Choose a Response" practice set for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 TOEFL iBT SPECIFICATIONS (Official PDF Pages 8-9):
 1. Provide EXACTLY 5 independent short items in the \`items\` array.
-2. Each item's \`audioPrompt\` MUST be a short, natural, 1-sentence everyday or campus question/statement of strictly 6 to 15 words (e.g., "Didn't I just see you in the library an hour ago?").
-3. Provide \`speakerName\` and \`speakerGender\` ('male' or 'female') for each item.
-4. For each item, provide EXACTLY 4 brief conversational reply \`options\` (each 5 to 12 words). Exactly ONE option is the natural, appropriate reply (\`answer\`: 0..3), and 3 are plausible distractors.
-5. Include a clear \`why\` explanation for each item.
-Return JSON format: {"title": "Campus Interaction Set", "category": "Campus Life", "items": [{"audioPrompt": "Short 6-15 word question?", "speakerName": "Sarah", "speakerGender": "female", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 1, "why": "Direct and natural response."}]}`;
+2. Each item's \`audioPrompt\` MUST be a short, natural spoken 1-sentence everyday or campus question/statement of strictly 6 to 15 words (e.g., "Didn't I just see you in the library an hour ago?").
+3. Provide explicit gendered \`speakerName\` and \`speakerGender\` ('male' or 'female') for each item.
+4. STRICT ANSWER-KEY VERIFICATION: For each item, provide EXACTLY 4 brief conversational reply \`options\` (each 5 to 12 words). Verify that \`options[answer]\` (0..3) is the single natural, appropriate reply and matches the option quoted in \`why\`, while all 3 distractors are clearly inappropriate.
+Return JSON format: {"title": "Campus Interaction Set", "category": "Campus Life", "items": [{"audioPrompt": "Short 6-15 word question?", "speakerName": "Sarah", "speakerGender": "female", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 1, "why": "Direct and natural response matching Option B."}]}`;
       case 'listening-announcement':
       case 'listening_announcement':
         if (isCoachMode) {
           return `You are an official ETS 2026 TOEFL iBT Coach & Marathon test creator. Create an Extended TOEFL Listening "Listen to an Announcement" item for level: ${levelDesc}. Topic: ${top}.
 COACH & MARATHON SPECIFICATIONS:
-1. Write a 90 to 130 word spoken campus announcement (script).
-2. Follow with EXACTLY 4 comprehension questions, each with a "hint" field explaining what to listen for.
-Return JSON format: {"title": "Announcement Title", "context": "University announcement context", "speakerName": "Dean Williams", "speakerGender": "male", "script": "Attention all students...", "questions": [{"q": "Question 1?", "options": ["A", "B", "C", "D"], "answer": 1, "why": "Explanation 1...", "hint": "Listen for the main policy change..."}]}`;
+1. Write a 90 to 130 word natural spoken campus announcement (script) with an explicit gendered \`speakerName\` and \`speakerGender\` ('male'|'female').
+2. Follow with EXACTLY 4 comprehension questions, each with a verified \`options[answer]\` matching \`why\`, and a "hint" field explaining what to listen for.
+Return JSON format: {"title": "Announcement Title", "context": "University announcement context", "speakerName": "Dean Williams", "speakerGender": "male", "script": "Attention all students...", "questions": [{"q": "Question 1?", "options": ["A", "B", "C", "D"], "answer": 1, "why": "Explanation quoting the correct option...", "hint": "Listen for the main policy change..."}]}`;
         }
         return `You are an official ETS 2026 TOEFL iBT test content creator. Create a TOEFL Listening "Listen to an Announcement" item for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 TOEFL iBT SPECIFICATIONS:
-1. Write a strictly 45 to 80 word spoken campus announcement (script) by 1 university official or professor (speakerName, speakerGender: 'male'|'female'). Avoid repetitive phrasing or filler text.
-2. Follow with EXACTLY 2 comprehension questions. Each question must have 4 distinct options, answer index (0..3), and why explanation.
-Return JSON format: {"title": "Announcement Title", "context": "University announcement context", "speakerName": "Dean Williams", "speakerGender": "male", "script": "Attention all students...", "questions": [{"q": "Question 1?", "options": ["A", "B", "C", "D"], "answer": 1, "why": "Explanation 1..."}, {"q": "Question 2?", "options": ["A", "B", "C", "D"], "answer": 2, "why": "Explanation 2..."}]}`;
+1. Write a strictly 45 to 80 word natural spoken campus announcement (script) by 1 university official or professor with explicit gendered \`speakerName\` and \`speakerGender\` ('male'|'female'). Avoid repetitive phrasing or filler text.
+2. Follow with EXACTLY 2 comprehension questions. Each question must have 4 distinct options, a verified \`answer\` index (0..3) where \`options[answer]\` is 100% supported by the script and matches \`why\`, and 3 clearly false distractors.
+Return JSON format: {"title": "Announcement Title", "context": "University announcement context", "speakerName": "Dean Williams", "speakerGender": "male", "script": "Attention all students...", "questions": [{"q": "Question 1?", "options": ["A", "B", "C", "D"], "answer": 1, "why": "Explanation 1 quoting option B..."}, {"q": "Question 2?", "options": ["A", "B", "C", "D"], "answer": 2, "why": "Explanation 2 quoting option C..."}]}`;
       case 'listening-academic-talk':
       case 'listening_academic_talk':
       case 'listening-lecture':
@@ -1082,19 +1099,19 @@ Return JSON format: {"title": "Announcement Title", "context": "University annou
         if (isCoachMode) {
           return `You are an official ETS 2026 TOEFL iBT Coach & Marathon test creator. Create an Extended TOEFL Listening "Listen to an Academic Talk" item for level: ${levelDesc}. Topic: ${top}.
 COACH & MARATHON SPECIFICATIONS:
-1. Write a 200 to 260 word academic lecture (script).
-2. Follow with EXACTLY 5 comprehension questions (including 1 "audioExcerpt" pragmatic question) and include a "hint" field on each question.
-Return JSON format: {"title": "Lecture Title", "topic": "${top}", "speakerName": "Dr. Angela Evans", "speakerGender": "female", "script": "Good morning class...", "questions": [{"q": "Why does the professor say this?", "audioExcerpt": "Exact 1-sentence quote from the script.", "questionType": "Speaker's Purpose / Function", "options": ["A", "B", "C", "D"], "answer": 0, "why": "...", "hint": "Listen to how the professor introduces this example..."}]}`;
+1. Write a 200 to 260 word natural spoken academic lecture (script) with explicit gendered \`speakerName\` and \`speakerGender\` ('male'|'female').
+2. Follow with EXACTLY 5 comprehension questions (including 1 "audioExcerpt" pragmatic question), each with a verified \`options[answer]\` matching \`why\`, and include a "hint" field on each question.
+Return JSON format: {"title": "Lecture Title", "topic": "${top}", "speakerName": "Dr. Angela Evans", "speakerGender": "female", "script": "Good morning class...", "questions": [{"q": "Why does the professor say this?", "audioExcerpt": "Exact 1-sentence quote from the script.", "questionType": "Speaker's Purpose / Function", "options": ["A", "B", "C", "D"], "answer": 0, "why": "Explanation quoting option A...", "hint": "Listen to how the professor introduces this example..."}]}`;
         }
         return `You are an official ETS 2026 TOEFL iBT test content creator. Create a TOEFL Listening "Listen to an Academic Talk" item for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 TOEFL iBT SPECIFICATIONS:
-1. Write a strictly 140 to 200 word academic talk or mini-lecture (script) by a university educator (speakerName, speakerGender: 'male'|'female'). Avoid repetitive phrasing or redundant concluding summaries.
+1. Write a strictly 140 to 200 word natural spoken academic talk or mini-lecture (script) by a university educator with explicit gendered \`speakerName\` and \`speakerGender\` ('male'|'female'). Avoid repetitive phrasing or redundant concluding summaries.
 2. Follow with EXACTLY 4 comprehension questions covering:
    - Gist / Main Idea ("questionType": "Gist / Main Idea")
    - Detail ("questionType": "Detail")
    - Inference / Implied Meaning ("questionType": "Inference / Implied Meaning")
    - Pragmatic "Listen Again to an Excerpt" Function/Purpose question ("questionType": "Speaker's Purpose / Function"): On EXACTLY 1 of the 4 questions, include \`"audioExcerpt"\` containing an exact 1-sentence quote from the lecture \`script\`, and ask "Why does the professor say this?" or "What does the professor imply when saying this?".
-3. Each question must have 4 distinct options, answer index (0..3), questionType, and why explanation.
+3. STRICT ANSWER-KEY VERIFICATION: Each question must have 4 distinct options, a verified \`answer\` index (0..3) where \`options[answer]\` matches the option quoted in \`why\`, and 3 clearly unsupported distractors.
 Return JSON format: {"title": "Lecture Title", "topic": "${top}", "speakerName": "Dr. Angela Evans", "speakerGender": "female", "script": "Good morning class...", "questions": [{"q": "Why does the professor say this?", "audioExcerpt": "Exact 1-sentence quote from the script.", "questionType": "Speaker's Purpose / Function", "options": ["A", "B", "C", "D"], "answer": 0, "why": "..."}, {"q": "Question 2?", "questionType": "Detail", "options": ["A", "B", "C", "D"], "answer": 1, "why": "..."}, {"q": "Question 3?", "questionType": "Detail", "options": ["A", "B", "C", "D"], "answer": 2, "why": "..."}, {"q": "Question 4?", "questionType": "Inference / Implied Meaning", "options": ["A", "B", "C", "D"], "answer": 3, "why": "..."}]}`;
       case 'listening-dialogue':
       case 'listening_dialogue':
@@ -1103,42 +1120,42 @@ Return JSON format: {"title": "Lecture Title", "topic": "${top}", "speakerName":
         if (isCoachMode) {
           return `You are an official ETS 2026 TOEFL iBT Coach & Marathon test creator. Create an Extended TOEFL Listening "Listen to a Conversation" task for level: ${levelDesc}. Topic: ${top}.
 COACH & MARATHON SPECIFICATIONS:
-1. Write a natural 10 to 12 turn conversation of 130 to 170 words between 1 female and 1 male speaker.
-2. Follow with EXACTLY 4 multiple-choice questions (including 1 "audioExcerpt" question) and include a "hint" field on every question.
-Return JSON format: {"title": "Conversation Title", "context": "Listen to a conversation between a student and a professor.", "speakers": {"A": "Emma (Student)", "B": "Professor Miller"}, "speakerGenders": {"A": "female", "B": "male"}, "script": "Emma: ...\\nProfessor Miller: ...", "questions": [{"q": "Why does the professor say this?", "audioExcerpt": "Professor Miller: Exact 1-sentence turn from the script.", "questionType": "Speaker's Purpose / Function", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 1, "why": "Explanation 1...", "hint": "Listen for the professor's concern in Turn 4..."}]}`;
+1. Write a natural spoken 10 to 12 turn conversation of 130 to 170 words between 1 female and 1 male speaker with explicit gendered speaker names.
+2. Follow with EXACTLY 4 multiple-choice questions (including 1 "audioExcerpt" question), each with a verified \`options[answer]\` matching \`why\`, and include a "hint" field on every question.
+Return JSON format: {"title": "Conversation Title", "context": "Listen to a conversation between a student and a professor.", "speakers": {"A": "Emma (Student)", "B": "Professor Miller"}, "speakerGenders": {"A": "female", "B": "male"}, "script": "Emma: ...\\nProfessor Miller: ...", "questions": [{"q": "Why does the professor say this?", "audioExcerpt": "Professor Miller: Exact 1-sentence turn from the script.", "questionType": "Speaker's Purpose / Function", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 1, "why": "Explanation quoting Option B...", "hint": "Listen for the professor's concern in Turn 4..."}]}`;
         }
         return `You are an official ETS 2026 TOEFL iBT test content creator. Create a TOEFL Listening "Listen to a Conversation" task for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 TOEFL iBT SPECIFICATIONS (Official PDF Pages 9-10):
-1. Write a short, natural 8 to 10 turn conversation of strictly 75 to 110 words total (5 to 15 words per turn, like a real 30-second spoken campus exchange—NOT a long multi-sentence monologue!) between two distinct speakers (1 female and 1 male with clear names, e.g., "Emma (Student)" & "Professor Miller", or "Lucas (Student)" & "Ms. Rivera (Librarian)").
+1. Write a short, natural spoken 8 to 10 turn conversation of strictly 75 to 110 words total (5 to 15 words per turn, like a real 30-second spoken campus exchange—NOT a long multi-sentence monologue!) between two distinct speakers (1 female and 1 male with explicit gendered names, e.g., "Emma (Student)" & "Professor Miller", or "Lucas (Student)" & "Ms. Rivera (Librarian)").
 2. Format every script line with the speaker name at the start of the line, e.g. "Emma: Professor Miller, do you have a minute to look at my survey design?\\nProfessor Miller: Sure, Emma. Did you narrow down your topic on sleep and memory?"
 3. Follow with EXACTLY 2 multiple-choice questions testing official TOEFL Listening skills:
    - Question 1 MUST be an official "Listen Again to an Excerpt" pragmatic/function/implication question: include \`"audioExcerpt"\` with an exact 1-sentence line from the conversation (including the speaker prefix, e.g. "Professor Miller: Relying only on self-reported sleep logs can be pretty inaccurate, though."), set \`"questionType"\` to \`"Speaker's Purpose / Function"\` or \`"Inference / Implied Meaning"\`, and ask "Why does the speaker say this?" or "What does the speaker imply when saying this?".
    - Question 2 tests Detail or Gist / Main Idea (\`"questionType": "Detail"\` or \`"Gist / Main Idea"\`).
-4. Every question MUST have 4 distinct options (\`options.length === 4\`), a verified \`answer\` index (0..3), \`questionType\`, and a clear \`why\` explanation confirming why that option is correct.
-Return JSON format: {"title": "Conversation Title", "context": "Listen to a conversation between a student and a professor.", "speakers": {"A": "Emma (Student)", "B": "Professor Miller"}, "speakerGenders": {"A": "female", "B": "male"}, "script": "Emma: ...\\nProfessor Miller: ...", "questions": [{"q": "Why does the professor say this?", "audioExcerpt": "Professor Miller: Exact 1-sentence turn from the script.", "questionType": "Speaker's Purpose / Function", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 1, "why": "Explanation 1..."}, {"q": "Question 2?", "questionType": "Detail", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 2, "why": "Explanation 2..."}]}`;
+4. STRICT ANSWER-KEY VERIFICATION: Every question MUST have 4 distinct options (\`options.length === 4\`), a verified \`answer\` index (0..3) where \`options[answer]\` matches the option quoted in \`why\`, and 3 clearly false distractors.
+Return JSON format: {"title": "Conversation Title", "context": "Listen to a conversation between a student and a professor.", "speakers": {"A": "Emma (Student)", "B": "Professor Miller"}, "speakerGenders": {"A": "female", "B": "male"}, "script": "Emma: ...\\nProfessor Miller: ...", "questions": [{"q": "Why does the professor say this?", "audioExcerpt": "Professor Miller: Exact 1-sentence turn from the script.", "questionType": "Speaker's Purpose / Function", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 1, "why": "Explanation 1 quoting Option B..."}, {"q": "Question 2?", "questionType": "Detail", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": 2, "why": "Explanation 2 quoting Option C..."}]}`;
       case 'listen-repeat':
       case 'speaking_listen_repeat':
       case 'speaking-listen-repeat':
         if (isCoachMode) {
           return `You are an official ETS 2026 TOEFL iBT Coach & Marathon test creator. Create a 12-sentence TOEFL Speaking "Listen and Repeat" Shadowing & Prosody set for level: ${levelDesc}. Topic: ${top}.
 COACH & MARATHON SPECIFICATIONS:
-1. All 12 sentences MUST be spoken by ONE single person in one continuous campus/academic orientation scenario.
-2. Progress smoothly from 6 words (Sentence 1) up to 18 words (Sentence 12).
+1. COHESIVE SINGLE-SPEAKER TOUR/ORIENTATION: All 12 sentences MUST be spoken by ONE single speaker role giving a continuous tour or orientation in one setting (e.g., "Sarah (Lab Coordinator)", "Marcus (Head Librarian)").
+2. PROGRESSIVE WORD LENGTH: Progress strictly in length from 6–7 words (Sentence 1) up to 14–16 words (Sentence 12).
 3. Insert " | " prosody chunking bars between natural 3-5 word phrase groups in every sentence so students can practice chunked shadowing!
 Return JSON format: {"title": "Orientation Shadowing Set", "speakerName": "Sarah (Lab Coordinator)", "speakerGender": "female", "sentences": ["Welcome to the | undergraduate biology laboratory.", "Please store your backpacks | inside the hallway lockers."]}`;
         }
         return `You are an official ETS 2026 TOEFL iBT test creator. Create a TOEFL Speaking "Listen and Repeat" practice set for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 ETS TOEFL iBT "LISTEN AND REPEAT" SPECIFICATIONS:
-1. COHESIVE SINGLE-SPEAKER SCENARIO: All 7 sentences in the set MUST be spoken by ONE single person (e.g., "Sarah (Lab Coordinator)", "Marcus (Head Librarian)", "Dr. Chen (Observatory Guide)", "Clara (Museum Docent)", "David (Academic Advisor)") directly addressing the listener ("Welcome to...", "Please store...", "You will find...", "If you need...") in ONE continuous, coherent campus or academic orientation/tour scenario!
+1. COHESIVE SINGLE-SPEAKER SCENARIO: All 7 sentences in the set MUST be spoken by ONE single speaker role (e.g., "Sarah (Lab Coordinator)", "Marcus (Head Librarian)", "Dr. Chen (Observatory Guide)", "Clara (Museum Docent)", "David (Academic Advisor)") directly addressing the listener ("Welcome to...", "Please store...", "You will find...", "If you need...") in ONE continuous, coherent campus or academic tour/orientation in one setting!
 2. FORBIDDEN: Do NOT write 7 random disconnected textbook statements about unrelated topics. Every sentence must belong to the same continuous briefing or guided tour.
-3. PROGRESSIVE WORD LENGTH: Provide EXACTLY 7 natural spoken sentences that progress smoothly in length and grammatical complexity:
+3. PROGRESSIVE WORD LENGTH: Provide EXACTLY 7 natural spoken sentences that progress strictly in length and grammatical complexity from 6–7 words (Sentence 1) to 14–16 words (Sentence 7):
    - Sentence 1: 6–7 words (warm welcome or opening statement)
    - Sentence 2: 8 words
    - Sentence 3: 9–10 words
    - Sentence 4: 11 words
    - Sentence 5: 12 words
-   - Sentence 6: 14 words
-   - Sentence 7: 15–16 words
+   - Sentence 6: 13–14 words
+   - Sentence 7: 14–16 words
 Return JSON format: {"title": "Biology Laboratory Safety Orientation", "speakerName": "Sarah (Lab Coordinator)", "speakerGender": "female", "sentences": ["Welcome to the undergraduate biology laboratory.", "Please store your backpacks inside the hallway lockers.", "Safety goggles and lab coats are required at all times.", "You will find clean glass slides inside the top cabinet drawer.", "Make sure to calibrate your microscope carefully before examining the tissue samples.", "Dispose of all used pipettes and gloves in the labeled biohazard container near the sink.", "If any chemical spill occurs during the experiment, notify your laboratory supervisor immediately for assistance."]}`;
       case 'speaking-interview':
       case 'speaking_interview':
@@ -1147,51 +1164,44 @@ Return JSON format: {"title": "Biology Laboratory Safety Orientation", "speakerN
 COACH & MARATHON SPECIFICATIONS:
 1. Provide 6 progressive interview questions on the topic (prepTimeSeconds: 15, responseTimeSeconds: 90).
 2. On EVERY question, include:
+   - "sampleAnswer": a natural 70–85 word first-person spoken model response that directly answers that exact question with a specific personal example
    - "speakingFormula": array of 3 step-by-step response steps
    - "topicVocabulary": array of 3 high-scoring Band 6.0 vocabulary phrases
    - "sentenceStarters": array of 2 natural spoken sentence starters
-Return JSON format: {"title": "Marathon Interview Simulation", "context": "Brief interviewer introduction", "interviewerName": "Prof. Lee (Male)", "interviewerGender": "male", "questions": [{"question": "Q1...", "prepTimeSeconds": 15, "responseTimeSeconds": 90, "suggestedPoints": ["Point 1", "Point 2"], "speakingFormula": ["Step 1...", "Step 2...", "Step 3..."], "topicVocabulary": ["phrase 1", "phrase 2", "phrase 3"], "sentenceStarters": ["From my perspective, ...", "For instance, ..."]}]}`;
+Return JSON format: {"title": "Marathon Interview Simulation", "context": "Brief interviewer introduction", "interviewerName": "Prof. Lee (Male)", "interviewerGender": "male", "questions": [{"question": "Q1...", "prepTimeSeconds": 15, "responseTimeSeconds": 90, "suggestedPoints": ["Point 1", "Point 2"], "sampleAnswer": "70-85 word first-person response with a specific personal example...", "speakingFormula": ["Step 1...", "Step 2...", "Step 3..."], "topicVocabulary": ["phrase 1", "phrase 2", "phrase 3"], "sentenceStarters": ["From my perspective, ...", "For instance, ..."]}]}`;
         }
         return `You are an official ETS 2026 TOEFL iBT Speaking examiner. Create a TOEFL Speaking "Take an Interview" practice simulation for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 TOEFL iBT SPECIFICATIONS:
 1. Format interviewerName with a realistic name and gender tag, e.g. "Prof. Lee (Male)" or "Dr. Patel (Female)".
-2. Provide a brief interviewer introduction (\`context\`) followed by EXACTLY 4 progressive interview questions on the topic:
+2. Provide a brief interviewer introduction (\`context\`) followed by EXACTLY 4 progressive interview questions on one topic:
    - Q1: Personal preference or concrete personal experience.
    - Q2: Specific examples or elaboration.
    - Q3: Broader community or educational impact.
    - Q4: Future policy or abstract evaluation.
-3. Each question has prepTimeSeconds: 15 and responseTimeSeconds: 45.
-Return JSON format: {"title": "University Interview Simulation", "context": "Brief interviewer introduction to the topic", "interviewerName": "Prof. Lee (Male)", "interviewerGender": "male", "questions": [{"question": "Q1...", "prepTimeSeconds": 15, "responseTimeSeconds": 45, "suggestedPoints": ["Point 1", "Point 2"]}, {"question": "Q2...", "prepTimeSeconds": 15, "responseTimeSeconds": 45, "suggestedPoints": ["Point 1", "Point 2"]}, {"question": "Q3...", "prepTimeSeconds": 15, "responseTimeSeconds": 45, "suggestedPoints": ["Point 1", "Point 2"]}, {"question": "Q4...", "prepTimeSeconds": 15, "responseTimeSeconds": 45, "suggestedPoints": ["Point 1", "Point 2"]}]}`;
+3. Each question MUST have \`prepTimeSeconds: 15\`, \`responseTimeSeconds: 45\`, \`suggestedPoints\`, and a natural 70–85 word first-person \`sampleAnswer\` that directly answers that exact question with a specific personal example.
+Return JSON format: {"title": "University Interview Simulation", "context": "Brief interviewer introduction to the topic", "interviewerName": "Prof. Lee (Male)", "interviewerGender": "male", "questions": [{"question": "Q1...", "prepTimeSeconds": 15, "responseTimeSeconds": 45, "suggestedPoints": ["Point 1", "Point 2"], "sampleAnswer": "70-85 word first-person spoken sample answer with a specific personal example..."}, {"question": "Q2...", "prepTimeSeconds": 15, "responseTimeSeconds": 45, "suggestedPoints": ["Point 1", "Point 2"], "sampleAnswer": "70-85 word first-person spoken sample answer..."}, {"question": "Q3...", "prepTimeSeconds": 15, "responseTimeSeconds": 45, "suggestedPoints": ["Point 1", "Point 2"], "sampleAnswer": "70-85 word first-person spoken sample answer..."}, {"question": "Q4...", "prepTimeSeconds": 15, "responseTimeSeconds": 45, "suggestedPoints": ["Point 1", "Point 2"], "sampleAnswer": "70-85 word first-person spoken sample answer..."}]}`;
       case 'build-sentence':
       case 'writing_build_sentence':
         if (isCoachMode) {
           return `You are an official ETS 2026 TOEFL iBT Coach & Marathon test creator. Create an 8-item TOEFL Writing "Build a Sentence" syntax marathon set for level: ${levelDesc}. Topic: ${top}.
 COACH & MARATHON SPECIFICATIONS:
 1. Provide EXACTLY 8 conversational exchanges in the \`items\` array.
-2. Keep every tile in \`targetChunks\`, \`distractorChunks\`, and \`words\` 100% lowercase (except "I").
-3. Include a detailed \`grammarRule\` on each item explaining the exact syntactic construction.
-Return JSON format: {"title": "Build a Sentence: Marathon Syntax", "items": [{"context": "What did you think of the guided tour?", "framePrefix": "The", "frameSuffix": "fantastic.", "targetChunks": ["tour guides", "who", "showed us around", "the", "old", "city", "were"], "distractorChunks": ["was"], "words": ["old", "were", "who", "was", "tour guides", "city", "the", "showed us around"], "targetSentence": "The tour guides who showed us around the old city were fantastic.", "answer": "The tour guides who showed us around the old city were fantastic.", "grammarRule": "Subject relative clause modifying plural noun requires plural verb.", "explanation": "Subject relative clause modifying plural noun requires plural verb."}]}`;
+2. For each exchange, generate ONLY:
+   - \`context\`: Speaker 1's natural conversational question or statement (1 sentence).
+   - \`targetSentence\`: Speaker 2's complete, grammatically flawless reply (8–12 words; ensure at least 3 items per set are direct interrogative questions ending in \`?\`, and the rest are statements ending in \`.\` using relative clauses, indirect questions, passive voice, or conditionals).
+   - \`distractorWord\`: 1 single lowercase grammatical distractor word (e.g., "was" when targetSentence uses "were", or "has" when targetSentence uses "have").
+   - \`grammarRule\`: Clear 1-sentence explanation of the syntactic structure.
+Return JSON format: {"title": "Build a Sentence: Marathon Syntax", "items": [{"context": "What did you think of the guided tour of the historical district?", "targetSentence": "The tour guides who showed us around the old city were fantastic.", "distractorWord": "was", "grammarRule": "Subject relative clause ('who showed us around the old city') modifying plural 'tour guides', requiring plural verb 'were' instead of 'was'."}]}`;
         }
         return `You are an official ETS 2026 TOEFL iBT test creator. Create a 5-item TOEFL Writing "Build a Sentence" set for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 ETS TOEFL iBT "BUILD A SENTENCE" SPECIFICATIONS:
 1. Provide EXACTLY 5 conversational exchanges in the \`items\` array.
-2. NEVER CAPITALIZE TILES IN THE WORD BANK: Every single word or phrase tile in \`targetChunks\`, \`distractorChunks\`, and \`words\` MUST be 100% lowercase (except the standalone pronoun "I"—avoid proper nouns in movable tiles so capitalization never gives away which tile goes first!).
-3. RANDOMIZE SENTENCE FRAME TYPES ACROSS THE 5 ITEMS: Mix these 4 official ETS frame layouts in randomized order across the 5 items:
-   - Frame Type 1 (Fixed Beginning + Fixed Ending): e.g., \`"framePrefix": "The", "frameSuffix": "fantastic."\`
-   - Frame Type 2 (Fixed Beginning Only): e.g., \`"framePrefix": "I'm not sure", "frameSuffix": "to the course website."\`
-   - Frame Type 3 (Fixed Ending Only): e.g., \`"framePrefix": "", "frameSuffix": "so early on weeknights?"\`
-   - Frame Type 4 (No Fixed Words — All Blanks + Final Punctuation \`.\` or \`?\`): e.g., \`"framePrefix": "", "frameSuffix": "?"\` or \`"."\`
-4. INCLUDE INTERROGATIVE (QUESTION) SENTENCES & DIVERSE GRAMMAR: Across the 5 items (in randomized order), include:
-   - Direct Interrogative / Question Sentences where Speaker 2 responds with a question ending in \`?\` (e.g., "How long has the science library been closing so early on weeknights?", "Wasn't the gallery reservation canceled earlier this week?")
-   - Embedded / Indirect Questions ("whether/what/where/when + subject + verb" without auxiliary inversion)
-   - Subject/Object Relative Clauses ("who", "which", "that", "whose")
-   - Passive Voice & Causatives ("has been approved", "cannot be checked out")
-   - Conditionals & Comparisons ("unless", "provided that", "far more efficient than")
-5. OFFICIAL ETS TILE BALANCE RULE (KEEP MOST TILES AS SINGLE WORDS!):
-   - Out of 6 or 7 blank slots (\`targetChunks\`), AT MOST 1 or 2 tiles should be a 2-3 word phrase (such as a noun phrase like \`"science library"\` or \`"tour guides"\`, or a short verb phrase like \`"showed us around"\`), while the REMAINING 4 to 5+ tiles MUST be SINGLE WORDS (especially question words, auxiliary verbs, main verbs, articles, pronouns, and connectors—e.g., \`["how", "long", "has", "the", "science library", "been", "closing"]\` or \`["tour guides", "who", "showed us around", "the", "old", "city", "were"]\`).
-   - On 2 to 3 items in the set, include 1 single-word grammatical distractor tile in \`distractorChunks\` (e.g., \`["was"]\`, \`["have"]\`, \`["weren't"]\`, \`["which"]\`) so \`words\` has 1 more tile than blank slots.
-   - \`words\` MUST be the shuffled array of \`[...targetChunks, ...distractorChunks]\`, 100% lowercase (except "I").
-Return JSON format: {"title": "Build a Sentence: Campus & Academic Syntax", "items": [{"context": "What did you think of the guided tour of the historical district?", "framePrefix": "The", "frameSuffix": "fantastic.", "targetChunks": ["tour guides", "who", "showed us around", "the", "old", "city", "were"], "distractorChunks": ["was"], "words": ["old", "were", "who", "was", "tour guides", "city", "the", "showed us around"], "targetSentence": "The tour guides who showed us around the old city were fantastic.", "answer": "The tour guides who showed us around the old city were fantastic.", "grammarRule": "Subject relative clause ('who showed us around the old city') modifying plural 'tour guides', requiring plural verb 'were' instead of 'was'.", "explanation": "Subject relative clause ('who showed us around the old city') modifying plural 'tour guides', requiring plural verb 'were' instead of 'was'."}]}`;
+2. For each exchange, generate ONLY:
+   - \`context\`: Speaker 1's natural conversational question or statement (1 sentence).
+   - \`targetSentence\`: Speaker 2's complete, grammatically flawless reply (8–12 words; ensure at least 2 items per set are direct interrogative questions ending in \`?\`, and the rest are statements ending in \`.\` using relative clauses, indirect questions, passive voice, or conditionals). Avoid proper nouns inside \`targetSentence\` so movable tiles remain 100% lowercase (except "I").
+   - \`distractorWord\`: 1 single lowercase grammatical distractor word (e.g., "was" when targetSentence uses "were", or "has" when targetSentence uses "have").
+   - \`grammarRule\`: Clear 1-sentence explanation of the syntactic structure.
+Return JSON format: {"title": "Build a Sentence: Campus & Academic Syntax", "items": [{"context": "What did you think of the guided tour of the historical district?", "targetSentence": "The tour guides who showed us around the old city were fantastic.", "distractorWord": "was", "grammarRule": "Subject relative clause ('who showed us around the old city') modifying plural 'tour guides', requiring plural verb 'were' instead of 'was'."}, {"context": "I tried studying in the science library last night, but the doors were locked at eight.", "targetSentence": "How long has the science library been closing so early on weeknights?", "distractorWord": "have", "grammarRule": "Direct wh-interrogative in present perfect continuous requiring singular auxiliary 'has' before 'the science library'."}]}`;
       case 'write-email':
       case 'writing_email':
         if (isCoachMode) {
@@ -1293,7 +1303,7 @@ Return JSON format: {"title": "Academic Discussion Board", "professorName": "Pro
 
           const rawText = response.text || response.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') || '';
           const parsed = cleanAndExtractJson(rawText);
-          const normalized = normalizeTask(taskType, parsed);
+          const normalized = normalizeTask(taskType, { ...parsed, coachMode: isCoachMode });
           return schema.parse(normalized);
         });
 
@@ -1312,7 +1322,7 @@ Return JSON format: {"title": "Academic Discussion Board", "professorName": "Pro
         });
 
         const parsed = cleanAndExtractJson(text);
-        const normalized = normalizeTask(taskType, parsed);
+        const normalized = normalizeTask(taskType, { ...parsed, coachMode: isCoachMode });
         const result = schema.parse(normalized);
         clearProviderCooldown(candidate.provider);
         return { ...result, isFallback: false, modelUsed };

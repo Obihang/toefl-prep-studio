@@ -492,6 +492,9 @@ export async function callBackendGenerate(
       if (res?.status) err.status = res.status;
       throw err;
     }
+    if (res.data) {
+      res.data = normalizeTaskData(res.data, taskType, { coachMode: isCoachMode });
+    }
     return res;
   });
 }
@@ -504,9 +507,16 @@ export async function generateTaskContent(
   extraOptions?: Record<string, any> | boolean
 ): Promise<any> {
   const optionsObj = typeof extraOptions === 'boolean' ? { coachMode: extraOptions } : extraOptions;
+  const isCoachMode = Boolean(
+    promptData === true ||
+      promptData?.coachMode === true ||
+      promptData?.mode === 'coach' ||
+      optionsObj?.coachMode === true ||
+      optionsObj?.mode === 'coach'
+  );
   const res = await callBackendGenerate(taskType, level, topic, promptData, optionsObj);
   const rawData = res?.data || res;
-  return normalizeTaskData(rawData, taskType);
+  return normalizeTaskData(rawData, taskType, { coachMode: isCoachMode });
 }
 
 export async function evaluateResponse(

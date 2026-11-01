@@ -15,9 +15,9 @@ export const COACH_CURATED_BANK: Record<string, any[]> = {
       level: 'advanced',
       difficulty: 'advanced',
       topic: 'science-tech',
-      text: 'Along abyssal mid-ocean ridges where sunlight never penetrates, superheated mineral-rich fluids erupt from tectonic fissures to form hydrothermal chimneys. Rather than rel[ying] on so[lar] radiation t[o] synthesize org[anic] compounds, speci[alized] microor[ganisms] known a[s] chemoautotrophs har[ness] chemical ene[rgy] by oxid[izing] dissolved hydr[ogen] sulfide a[nd] methane. These pri[mary] producers esta[blish] dense, self-su[staining] biological commu[nities] that thr[ive] under crus[hing] hydrostatic pre[ssure] and st[eep] thermal grad[ients]. Symbiotic gi[ant] tube wo[rms], blind ve[nt] shrimp, and bivalve mollusks depend entirely upon intracellular bacteria housed within their specialized gill tissues to convert toxic volcanic emissions into vital nutritional carbohydrates.',
+      text: 'Along abyssal mid-ocean ridges where sunlight never penetrates, superheated mineral-rich fluids erupt from tectonic fissures to form hydrothermal chimneys. Rather th[an] relying o[n] solar radia[tion] to synth[esize] organic comp[ounds], specialized microor[ganisms] known a[s] chemoautotrophs har[ness] chemical ene[rgy] by oxid[izing] dissolved hydr[ogen] sulfide a[nd] volcanic met[hane]. These pri[mary] producers esta[blish] dense, self-su[staining] biological commu[nities] that thr[ive] under crus[hing] hydrostatic pre[ssure] and st[eep] thermal grad[ients]. Symbiotic gi[ant] tube wo[rms], blind ve[nt] shrimp, a[nd] bivalve mol[lusks] depend enti[rely] upon intracellu[lar] bacteria housed within their specialized gill tissues to convert toxic volcanic emissions into vital nutritional carbohydrates.',
       explanation:
-        'Marathon C-Test (24 blanks): Tests academic morphology and collocations in deep-sea marine biology and biochemistry.',
+        'Marathon C-Test (25 blanks): Tests academic morphology and collocations in deep-sea marine biology and biochemistry.',
     },
     {
       id: 'coach_cw_002',

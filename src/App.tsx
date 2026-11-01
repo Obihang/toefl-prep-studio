@@ -2276,7 +2276,7 @@ export default function App() {
           const targetType = (updated.taskType || currentTaskType) as TaskTypeId;
           setCustomTasks((prev) => ({
             ...prev,
-            [targetType]: normalizeTaskData(updated, targetType),
+            [targetType]: normalizeTaskData({ ...updated, isManualDevEdit: true }, targetType),
           }));
           setTaskResetNonce((n) => n + 1);
           getQuestionBankStats(practiceMode).then(setBankStats).catch(() => {});

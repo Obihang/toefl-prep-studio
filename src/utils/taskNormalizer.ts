@@ -378,6 +378,14 @@ export function healCorruptedCTestWords(input: string): string {
     .replace(/\bpre\[+sure\]+/gi, 'pre[ssure]')
     .replace(/\bhydrostatic\s+pres\[+sure\]+/gi, 'hydrostatic pre[ssure]')
     .replace(/\bpresure\b/gi, 'pressure')
+    .replace(/\benerg\b/gi, 'energy')
+    .replace(/\bdurin\b/gi, 'during')
+    .replace(/\bdaays\b/gi, 'days')
+    .replace(/\badvancments\b/gi, 'advancements')
+    .replace(/\badvancment\b/gi, 'advancement')
+    .replace(/\benviroment\b/gi, 'environment')
+    .replace(/\benviromental\b/gi, 'environmental')
+    .replace(/\bdevelopement\b/gi, 'development')
     .replace(/\bsustaing\b/gi, 'sustaining')
     .replace(/\bmaintaing\b/gi, 'maintaining')
     .replace(/\bremaing\b/gi, 'remaining')
@@ -417,7 +425,8 @@ export function healCorruptedCTestWords(input: string): string {
     .replace(/\bprofesor\b/gi, 'professor')
     .replace(/\bquanties\b/gi, 'quantities')
     .replace(/\bsupercondcut\b/gi, 'superconducting')
-    .replace(/\bsuperconduct\b/gi, 'superconducting');
+    .replace(/\bsuperconduct\b/gi, 'superconducting')
+    .replace(/([a-zA-Z])\1{2,}/g, '$1$1');
 }
 
 /**
@@ -503,21 +512,29 @@ export function syncBracketedTextWithBlanks(
 
 /**
  * Deterministically normalizes any "Complete the Words" (C-Test) task according to
- * official ETS 2026 TOEFL iBT C-Test specifications while preserving valid custom/edited
- * `prefix[answer]` splits so `text` and `blanks` are 100% synchronized.
+ * official ETS 2026 TOEFL iBT C-Test specifications:
+ * - Preserves manual Developer Question Editor edits verbatim when `raw?.isManualDevEdit === true`.
+ * - For all AI-generated and static passages (`raw?.isManualDevEdit !== true`), strips any brackets,
+ *   heals typos, keeps Sentence 1 intact, and blanks strictly every 2nd eligible word in Sentence 2+
+ *   (NEVER blanking two consecutive words in a row!) for `targetBlankCount` words (`10` in Exam Mode, `25` in Coach Mode).
  */
 export function normalizeCompleteWordsTask(raw: any): {
   title: string;
   text: string;
+  passage: string;
   totalBlanks: number;
   blanks: NormalizedBlankItem[];
   explanation?: string;
+  isManualDevEdit?: boolean;
 } {
   const fallbackText =
-    'Synaptic plasticity is the biological foundation of human learning and memory retention. Neuroscientists have discovered that synapses gradually strengthen through repeated electrical stimulation. This phenomenon directly enables cortical neurons to store vast quantities of complex information across cerebral circuits. As neural pathways consolidate during deep restorative sleep, newly acquired declarative knowledge transitions from temporary hippocampal storage into permanent neocortical networks.';
+    'Synaptic plasticity is the biological foundation of human learning and memory retention. Neuroscientists have discovered that synapses gradually strengthen through repeated electrical stimulation. This phenomenon directly enables cortical neurons to store vast quantities of complex information across cerebral circuits. As neural pathways consolidate during deep restorative sleep, newly acquired declarative knowledge transitions from temporary hippocampal storage into permanent neocortical networks. Consequently, sustained cognitive engagement and adequate rest remain essential for long-term intellectual development.';
+
+  const fallbackContinuation =
+    'Furthermore, longitudinal empirical investigations confirm that these interconnected mechanisms operate consistently across diverse environmental conditions. Consequently, contemporary researchers continue to refine analytical models to account for subtle structural variations.';
 
   const title = String(raw?.title || 'Complete the Words').trim() || 'Complete the Words';
-  let rawText = String(raw?.text || raw?.passage || raw?.content?.text || '').trim();
+  let rawText = String(raw?.passage || raw?.text || raw?.content?.passage || raw?.content?.text || '').trim();
   if (!rawText || rawText.length < 40) {
     rawText = fallbackText;
   }
@@ -528,85 +545,44 @@ export function normalizeCompleteWordsTask(raw: any): {
       Number(raw?.totalBlanks) > 12 ||
       (rawText.match(/\[+[^\]]+\]+/g) || []).length > 12
   );
-  const minBlanks = isCoach ? 20 : 10;
-  const maxBlanks = isCoach ? 25 : 10;
+  const targetBlankCount = isCoach ? 25 : 10;
 
-  // Step 0: Heal any corrupted words and synchronize with raw.blanks if raw._preferBlanks is set
-  const synced = syncBracketedTextWithBlanks(
-    rawText,
-    raw?.blanks,
-    Boolean(raw?._preferBlanks)
-  );
-  rawText = synced.text;
-  const existingBlanks = synced.blanks;
-
-  // Check if Sentence 1 has 0 blanks and existing brackets are already valid
-  let initialS1EndIdx = -1;
-  const initialTermRegex = /([.!?])\s+/g;
-  let initialTermMatch: RegExpExecArray | null;
-  while ((initialTermMatch = initialTermRegex.exec(rawText)) !== null) {
-    const before = rawText.slice(0, initialTermMatch.index + 1);
-    const lastWord = (before.match(/[a-zA-Z0-9.'’]+$/) || [''])[0].toLowerCase();
-    if (!SENTENCE_ABBREVIATIONS.has(lastWord)) {
-      initialS1EndIdx = initialTermMatch.index + 1;
-      break;
+  // Step 0: Only preserve existing brackets verbatim when `raw?.isManualDevEdit === true` (from Developer Question Editor)
+  if (raw?.isManualDevEdit === true) {
+    const synced = syncBracketedTextWithBlanks(
+      rawText,
+      raw?.blanks,
+      Boolean(raw?._preferBlanks)
+    );
+    if (synced.blanks.length > 0) {
+      const cleanText = synced.text.replace(/\s+/g, ' ').trim();
+      const finalBlanks = extractBlanksFromBracketedText(cleanText);
+      return {
+        title,
+        text: cleanText,
+        passage: cleanText,
+        totalBlanks: finalBlanks.length,
+        blanks: finalBlanks,
+        isManualDevEdit: true,
+        ...(raw?.explanation ? { explanation: String(raw.explanation) } : {}),
+      };
     }
   }
-  const s1HasBlanks = initialS1EndIdx !== -1 && /[\[\]]/.test(rawText.slice(0, initialS1EndIdx));
-  const isExplicitlyEdited = Boolean(raw?.isEdited || raw?.editedBy || raw?.updatedAt);
 
-  if (
-    !s1HasBlanks &&
-    existingBlanks.length > 0 &&
-    (isExplicitlyEdited ||
-      (existingBlanks.length >= minBlanks && existingBlanks.length <= maxBlanks))
-  ) {
-    const cleanText = rawText.replace(/\s+/g, ' ').trim();
-    const finalBlanks = extractBlanksFromBracketedText(cleanText);
-    return {
-      title,
-      text: cleanText,
-      totalBlanks: finalBlanks.length,
-      blanks: finalBlanks,
-      ...(raw?.explanation ? { explanation: String(raw.explanation) } : {}),
-    };
-  }
-
-  // Record custom splits from existing brackets and raw.blanks before stripping brackets
+  // Curated morphological splits for specific words
   const customSplitsByWord = new Map<string, { prefix: string; answer: string }>([
     ['pressure', { prefix: 'pre', answer: 'ssure' }],
     ['microorganisms', { prefix: 'microor', answer: 'ganisms' }],
     ['self-sustaining', { prefix: 'self-su', answer: 'staining' }],
   ]);
-  for (const b of existingBlanks) {
-    if (b.prefix && b.answer && b.fullWord) {
-      customSplitsByWord.set(b.fullWord.toLowerCase(), {
-        prefix: b.prefix,
-        answer: b.answer,
-      });
-    }
-  }
-  if (Array.isArray(raw?.blanks)) {
-    for (const b of raw.blanks) {
-      if (b?.prefix && b?.answer) {
-        const fw = String(b.fullWord || b.word || `${b.prefix}${b.answer}`);
-        if (b.prefix.length + b.answer.length === fw.length) {
-          customSplitsByWord.set(fw.toLowerCase(), {
-            prefix: String(b.prefix),
-            answer: String(b.answer),
-          });
-        }
-      }
-    }
-  }
 
-  // Step 1: Repair any corrupted bracket tokens and strip brackets to produce cleanParagraph
+  // Step 1: Repair any corrupted bracket tokens and strip ALL brackets/underscores to produce clean plain English
   rawText = rawText.replace(/([a-zA-Z'\u2019-]+)\[+([a-zA-Z'\u2019-]+)\]+/g, (_, p, a) =>
     repairBracketToken(p, a)
   );
   rawText = rawText.replace(/\[+([a-zA-Z'\u2019-]+)\]+([a-zA-Z'\u2019-]+)/g, '$1$2');
   rawText = rawText.replace(/\[+([^\]]+)\]+/g, '$1');
-  rawText = rawText.replace(/[\[\]]+/g, '');
+  rawText = rawText.replace(/[\[\]_]+/g, '');
 
   const cleanParagraph = healCorruptedCTestWords(rawText.replace(/\s+/g, ' ').trim());
 
@@ -633,6 +609,13 @@ export function normalizeCompleteWordsTask(raw: any): {
     const splitAt = Math.min(12, Math.floor(words.length / 3));
     sentence1 = words.slice(0, splitAt).join(' ') + '.';
     sentenceRest = words.slice(splitAt).join(' ');
+  }
+
+  // Ensure sentenceRest has enough words so that strictly alternating every-2nd-word selection
+  // reaches targetBlankCount without ever blanking two consecutive words in a row
+  const minRestWordsNeeded = targetBlankCount * 2 + 8;
+  if (sentenceRest.split(/\s+/).filter(Boolean).length < minRestWordsNeeded) {
+    sentenceRest = `${sentenceRest} ${fallbackContinuation} ${fallbackText}`.trim();
   }
 
   // Step 3: Tokenize sentenceRest and analyze eligible words (including hyphenated compounds like self-sustaining)
@@ -681,25 +664,16 @@ export function normalizeCompleteWordsTask(raw: any): {
     }
   }
 
-  // Step 4: Deterministically select every 2nd eligible word (alternating: skip 1, blank 1, skip 1, blank 1...)
+  // Step 4: Deterministically select strictly every 2nd eligible word (skip 1, blank 1, skip 1, blank 1...)
+  // NEVER blanking two consecutive words in a row!
   const selectedTokenIndices = new Set<number>();
   let eligibleCount = 0;
 
   for (const wi of wordInfos) {
     if (!wi.isEligible) continue;
     eligibleCount++;
-    if (eligibleCount % 2 === 0 && selectedTokenIndices.size < maxBlanks) {
+    if (eligibleCount % 2 === 0 && selectedTokenIndices.size < targetBlankCount) {
       selectedTokenIndices.add(wi.tokenIndex);
-    }
-  }
-
-  // If fewer than minBlanks selected, supplement from remaining eligible words
-  if (selectedTokenIndices.size < minBlanks) {
-    for (const wi of wordInfos) {
-      if (selectedTokenIndices.size >= minBlanks) break;
-      if (wi.isEligible && !selectedTokenIndices.has(wi.tokenIndex)) {
-        selectedTokenIndices.add(wi.tokenIndex);
-      }
     }
   }
 
@@ -719,7 +693,12 @@ export function normalizeCompleteWordsTask(raw: any): {
     const custom = customSplitsByWord.get(fullWord.toLowerCase());
     let prefix = '';
     let answer = '';
-    if (custom && custom.prefix.length >= 1 && custom.answer.length >= 1 && custom.prefix.length + custom.answer.length === fullWord.length) {
+    if (
+      custom &&
+      custom.prefix.length >= 1 &&
+      custom.answer.length >= 1 &&
+      custom.prefix.length + custom.answer.length === fullWord.length
+    ) {
       prefix = fullWord.slice(0, custom.prefix.length);
       answer = fullWord.slice(custom.prefix.length);
     } else {
@@ -741,9 +720,9 @@ export function normalizeCompleteWordsTask(raw: any): {
     return `${wi.lead}${prefix}[${answer}]${wi.trail}`;
   });
 
-  // Step 6: Strip any extra trailing sentences beyond 1 single concluding sentence after the final target blank
-  const targetCutoffBlank = isCoach ? blanks.length : 10;
-  if (blanks.length >= targetCutoffBlank && targetCutoffBlank > 0) {
+  // Step 6: Keep 1–2 concluding sentences after the final blank so the passage is ~75–90 words total in Exam Mode
+  const targetCutoffBlank = blanks.length;
+  if (targetCutoffBlank > 0) {
     let tokenLastIdx = -1;
     let bCount = 0;
     for (let i = 0; i < tokens.length; i++) {
@@ -796,6 +775,7 @@ export function normalizeCompleteWordsTask(raw: any): {
   return {
     title,
     text: normalizedText,
+    passage: normalizedText,
     totalBlanks: blanks.length,
     blanks,
     ...(raw?.explanation ? { explanation: String(raw.explanation) } : {}),
@@ -943,13 +923,13 @@ const GRAMMATICAL_DISTRACTOR_MAP: Record<string, string> = {
 };
 
 function enforceSingleWordDominantChunks(rawChunks: string[]): string[] {
-  // First normalize each chunk and split any overly long phrase (> 3 words)
+  // First normalize each chunk and split any phrase > 2 words so phrase chunks are at most 2 words
   let chunks: string[] = [];
   for (const raw of rawChunks) {
     const clean = normalizeTileChunk(raw);
     if (!clean) continue;
     const parts = clean.split(' ').filter(Boolean);
-    if (parts.length > 3) {
+    if (parts.length > 2) {
       chunks.push(...parts.slice(0, parts.length - 2), parts.slice(-2).join(' '));
     } else {
       chunks.push(clean);
@@ -957,7 +937,7 @@ function enforceSingleWordDominantChunks(rawChunks: string[]): string[] {
   }
 
   // Official ETS Tile Balance Rule:
-  // At most 2 multi-word phrase tiles (2-3 words each), and at least 4-5 single-word tiles!
+  // 4-5+ single words and at most 1 (or 2 for long sentences) short 2-word phrase
   let safety = 0;
   while (safety < 20) {
     safety++;
@@ -971,7 +951,8 @@ function enforceSingleWordDominantChunks(rawChunks: string[]): string[] {
       }
     }
 
-    if (multiIndices.length <= 2 && (singleCount >= 4 || multiIndices.length === 0)) {
+    const maxAllowedMulti = chunks.length >= 6 ? 1 : 1;
+    if (multiIndices.length <= maxAllowedMulti && (singleCount >= 4 || multiIndices.length === 0)) {
       break;
     }
 
@@ -986,45 +967,38 @@ function enforceSingleWordDominantChunks(rawChunks: string[]): string[] {
     }
 
     const wordsToSplit = chunks[splitIdx].split(' ');
-    if (wordsToSplit.length === 2) {
-      chunks.splice(splitIdx, 1, wordsToSplit[0], wordsToSplit[1]);
-    } else if (wordsToSplit.length >= 3) {
-      if (SINGLE_STRUCTURAL_WORDS.has(wordsToSplit[0])) {
-        chunks.splice(splitIdx, 1, wordsToSplit[0], wordsToSplit.slice(1).join(' '));
-      } else if (SINGLE_STRUCTURAL_WORDS.has(wordsToSplit[wordsToSplit.length - 1])) {
-        chunks.splice(
-          splitIdx,
-          1,
-          wordsToSplit.slice(0, wordsToSplit.length - 1).join(' '),
-          wordsToSplit[wordsToSplit.length - 1]
-        );
-      } else {
-        chunks.splice(splitIdx, 1, ...wordsToSplit);
-      }
-    }
+    chunks.splice(splitIdx, 1, ...wordsToSplit);
   }
 
   return chunks;
 }
 
+/**
+ * Splits the middle portion of `targetSentence` into 5 to 6 chunks consisting of
+ * 4–5 single words and at most 1 short 2-word phrase (or additional merges only if > 7 words),
+ * all lowercased (except standalone "I").
+ */
 function groupWordsIntoTargetChunks(words: string[], targetSlotCount: number = 6): string[] {
   const cleanWords = words
     .flatMap((w) => normalizeTileChunk(w).split(' '))
     .filter(Boolean);
   if (cleanWords.length === 0) return [];
-  if (cleanWords.length <= targetSlotCount) {
+  if (cleanWords.length <= 5) {
     return cleanWords;
   }
 
   const chunks: string[] = [...cleanWords];
   let safety = 0;
-  // Merge at most 2 pairs of non-structural content words so that 4-5+ tiles remain single words
-  while (chunks.length > 7 && safety < 20) {
+
+  // Merge adjacent pairs until chunks.length <= targetSlotCount (preferring 1 short 2-word phrase and 4-5 single words)
+  while (chunks.length > targetSlotCount && safety < 20) {
     safety++;
     const currentMultiCount = chunks.filter((c) => c.includes(' ')).length;
+    if (currentMultiCount >= 1 && chunks.length <= 6) break;
     if (currentMultiCount >= 2) break;
 
     let merged = false;
+    // Prefer merging two adjacent non-structural content words into a 2-word phrase
     for (let i = chunks.length - 2; i >= 0; i--) {
       const a = chunks[i];
       const b = chunks[i + 1];
@@ -1034,12 +1008,28 @@ function groupWordsIntoTargetChunks(words: string[], targetSlotCount: number = 6
         break;
       }
     }
+    // Or merge article/preposition + noun ("the city", "at night", "to study")
     if (!merged) {
       for (let i = chunks.length - 2; i >= 0; i--) {
         const a = chunks[i];
         const b = chunks[i + 1];
-        if (!a.includes(' ') && !b.includes(' ') && (a === 'the' || a === 'a' || a === 'to') && !SINGLE_STRUCTURAL_WORDS.has(b)) {
+        if (
+          !a.includes(' ') &&
+          !b.includes(' ') &&
+          (a === 'the' || a === 'a' || a === 'an' || a === 'to' || a === 'in' || a === 'on' || a === 'at') &&
+          !SINGLE_STRUCTURAL_WORDS.has(b)
+        ) {
           chunks.splice(i, 2, `${a} ${b}`);
+          merged = true;
+          break;
+        }
+      }
+    }
+    // Fallback: merge the last two single-word tiles if still > targetSlotCount
+    if (!merged && chunks.length > 6) {
+      for (let i = chunks.length - 2; i >= 0; i--) {
+        if (!chunks[i].includes(' ') && !chunks[i + 1].includes(' ')) {
+          chunks.splice(i, 2, `${chunks[i]} ${chunks[i + 1]}`);
           merged = true;
           break;
         }
@@ -1047,12 +1037,45 @@ function groupWordsIntoTargetChunks(words: string[], targetSlotCount: number = 6
     }
     if (!merged) break;
   }
-  return enforceSingleWordDominantChunks(chunks);
+
+  return chunks;
+}
+
+/**
+ * Verifies whether existing `framePrefix`, `targetChunks`, and `frameSuffix`
+ * reconstruct `cleanAnswer` 100% accurately with lowercase tiles (except "I").
+ */
+function doesChunksReconstructSentence(
+  framePrefix: string,
+  targetChunks: string[],
+  frameSuffix: string,
+  cleanAnswer: string
+): boolean {
+  if (!Array.isArray(targetChunks) || targetChunks.length < 4 || targetChunks.length > 8) {
+    return false;
+  }
+  const prefixWords = tokenizeSentenceWords(framePrefix);
+  const chunkWords = targetChunks.flatMap((c) => tokenizeSentenceWords(c));
+  const suffixWords = tokenizeSentenceWords(frameSuffix);
+  const reconstructed = [...prefixWords, ...chunkWords, ...suffixWords].map((w) => w.toLowerCase());
+  const expected = tokenizeSentenceWords(cleanAnswer).map((w) => w.toLowerCase());
+
+  if (reconstructed.length !== expected.length || expected.length === 0) {
+    return false;
+  }
+  for (let i = 0; i < expected.length; i++) {
+    if (reconstructed[i] !== expected[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function deriveFrameAndChunksFromSentence(
   cleanAnswer: string,
-  idx: number
+  idx: number,
+  rawDistractorWord?: string,
+  rawDistractorChunks?: any[]
 ): {
   framePrefix: string;
   frameSuffix: string;
@@ -1065,26 +1088,36 @@ function deriveFrameAndChunksFromSentence(
     .replace(/[.!?]+$/, '')
     .trim()
     .split(/\s+/)
+    .map((t) => t.replace(/^[,;:.!?()"']+|[.!?;:,()"']+$/g, ''))
     .filter(Boolean);
 
-  const styleIdx = (hashString(cleanAnswer) + idx) % 4;
+  // Rotate deterministically across the 4 official ETS frame styles (index % 4):
+  // 0 = both framePrefix (first 1-2 words) and frameSuffix (last 1-2 words + punctuation)
+  // 1 = framePrefix only (first 1-2 words) + ending punctuation in frameSuffix
+  // 2 = frameSuffix only (last 2 words + punctuation)
+  // 3 = no fixed words, only ending punctuation (. or ?) in frameSuffix
+  const styleIdx = idx % 4;
   let framePrefix = '';
   let frameSuffix = punct;
   let middleTokens = [...rawTokens];
 
-  if (rawTokens.length >= 8) {
+  if (rawTokens.length >= 7) {
     if (styleIdx === 0) {
-      framePrefix = rawTokens[0];
-      frameSuffix = `${rawTokens[rawTokens.length - 1]}${punct}`;
-      middleTokens = rawTokens.slice(1, rawTokens.length - 1);
+      const pCount = rawTokens.length >= 10 ? 2 : 1;
+      const sCount = rawTokens.length >= 9 ? 2 : 1;
+      framePrefix = rawTokens.slice(0, pCount).join(' ');
+      frameSuffix = `${rawTokens.slice(-sCount).join(' ')}${punct}`;
+      middleTokens = rawTokens.slice(pCount, rawTokens.length - sCount);
     } else if (styleIdx === 1) {
-      framePrefix = rawTokens.slice(0, 2).join(' ');
+      const pCount = rawTokens.length >= 9 ? 2 : 1;
+      framePrefix = rawTokens.slice(0, pCount).join(' ');
       frameSuffix = punct;
-      middleTokens = rawTokens.slice(2);
+      middleTokens = rawTokens.slice(pCount);
     } else if (styleIdx === 2) {
+      const sCount = rawTokens.length >= 8 ? 2 : 1;
       framePrefix = '';
-      frameSuffix = `${rawTokens.slice(-2).join(' ')}${punct}`;
-      middleTokens = rawTokens.slice(0, rawTokens.length - 2);
+      frameSuffix = `${rawTokens.slice(-sCount).join(' ')}${punct}`;
+      middleTokens = rawTokens.slice(0, rawTokens.length - sCount);
     } else {
       framePrefix = '';
       frameSuffix = punct;
@@ -1094,7 +1127,25 @@ function deriveFrameAndChunksFromSentence(
 
   const targetChunks = groupWordsIntoTargetChunks(middleTokens, 6);
   const distractorChunks: string[] = [];
-  if (idx % 2 === 0) {
+
+  if (typeof rawDistractorWord === 'string' && rawDistractorWord.trim()) {
+    const cleanDist = normalizeTileChunk(rawDistractorWord);
+    if (cleanDist && !targetChunks.includes(cleanDist)) {
+      distractorChunks.push(cleanDist);
+    }
+  }
+
+  if (distractorChunks.length === 0 && Array.isArray(rawDistractorChunks)) {
+    for (const rawD of rawDistractorChunks) {
+      const cleanDist = normalizeTileChunk(String(rawD || ''));
+      if (cleanDist && !targetChunks.includes(cleanDist)) {
+        distractorChunks.push(cleanDist);
+        break;
+      }
+    }
+  }
+
+  if (distractorChunks.length === 0) {
     for (const chunk of targetChunks) {
       const dist = GRAMMATICAL_DISTRACTOR_MAP[chunk];
       if (dist && !targetChunks.includes(dist)) {
@@ -1117,21 +1168,21 @@ const FALLBACK_BUILD_SENTENCE_ITEMS = [
     context: 'What did you think of the guided tour of the historical district?',
     framePrefix: 'The',
     frameSuffix: 'fantastic.',
-    targetChunks: ['tour guides', 'who', 'showed us around', 'the', 'old', 'city', 'were'],
+    targetChunks: ['tour guides', 'who', 'showed', 'us', 'around', 'were'],
     distractorChunks: ['was'],
-    answer: 'The tour guides who showed us around the old city were fantastic.',
+    answer: 'The tour guides who showed us around were fantastic.',
     explanation:
-      'Subject relative clause ("who showed us around the old city") modifying plural "tour guides", requiring the plural verb "were" rather than "was".',
+      'Subject relative clause ("who showed us around") modifying plural "tour guides", requiring the plural verb "were" rather than "was".',
   },
   {
     context: 'I tried studying in the science library last night, but the doors were locked at eight.',
     framePrefix: '',
-    frameSuffix: 'so early on weeknights?',
-    targetChunks: ['how', 'long', 'has', 'the', 'science library', 'been', 'closing'],
+    frameSuffix: 'on weeknights?',
+    targetChunks: ['how', 'long', 'has', 'the', 'science library', 'closed'],
     distractorChunks: ['have'],
-    answer: 'How long has the science library been closing so early on weeknights?',
+    answer: 'How long has the science library closed on weeknights?',
     explanation:
-      'Direct wh-interrogative in present perfect continuous: "How + long + has + singular subject (the science library) + been + closing + modifiers?".',
+      'Direct wh-interrogative in present perfect: "How + long + has + singular subject (the science library) + past participle + modifiers?".',
   },
   {
     context: "Has the department chair approved the budget for next month's robotics symposium?",
@@ -1146,10 +1197,10 @@ const FALLBACK_BUILD_SENTENCE_ITEMS = [
   {
     context: 'Where are the guest lecturers staying during the environmental policy conference?',
     framePrefix: '',
-    frameSuffix: 'near the main gate?',
-    targetChunks: ["aren't", 'most', 'of', 'the', 'visiting speakers', 'staying', 'at the hotel'],
+    frameSuffix: 'near the gate?',
+    targetChunks: ["aren't", 'most', 'of', 'the', 'visiting speakers', 'staying'],
     distractorChunks: ["isn't"],
-    answer: "Aren't most of the visiting speakers staying at the hotel near the main gate?",
+    answer: "Aren't most of the visiting speakers staying near the gate?",
     explanation:
       'Negative interrogative question: plural subject "most of the visiting speakers" agrees with the plural auxiliary "aren\'t" rather than "isn\'t".',
   },
@@ -1157,11 +1208,11 @@ const FALLBACK_BUILD_SENTENCE_ITEMS = [
     context: 'Can undergraduate students borrow these high-resolution cameras for weekend projects?',
     framePrefix: '',
     frameSuffix: 'written permission.',
-    targetChunks: ['the', 'cameras', 'cannot', 'be', 'checked out', 'unless', 'you have'],
-    distractorChunks: [],
-    answer: 'The cameras cannot be checked out unless you have written permission.',
+    targetChunks: ['the', 'cameras', 'cannot', 'be', 'borrowed', 'without'],
+    distractorChunks: ['unless'],
+    answer: 'The cameras cannot be borrowed without written permission.',
     explanation:
-      'Passive modal construction ("cannot be checked out") followed by a conditional "unless" clause ("unless you have written permission").',
+      'Passive modal construction ("cannot be borrowed") followed by a prepositional phrase ("without written permission").',
   },
 ];
 
@@ -1172,6 +1223,7 @@ export interface NormalizedBuildSentenceItem {
   frameSuffix: string;
   targetChunks: string[];
   distractorChunks: string[];
+  distractorWord?: string;
   words: string[];
   scrambledWords: string[];
   targetSentence: string;
@@ -1196,6 +1248,11 @@ export function normalizeBuildSentenceItem(
 
   let framePrefix = typeof it?.framePrefix === 'string' ? it.framePrefix.trim() : '';
   let frameSuffix = typeof it?.frameSuffix === 'string' ? it.frameSuffix.trim() : '';
+  if (!frameSuffix) {
+    frameSuffix = terminalPunct;
+  } else if (!/[.!?]$/.test(frameSuffix)) {
+    frameSuffix = `${frameSuffix}${terminalPunct}`;
+  }
 
   const rawTargetChunks = Array.isArray(it?.targetChunks)
     ? it.targetChunks.map((c: any) => normalizeTileChunk(c)).filter(Boolean)
@@ -1204,20 +1261,44 @@ export function normalizeBuildSentenceItem(
   let targetChunks: string[] = [];
   let distractorChunks: string[] = [];
 
-  if (rawTargetChunks.length >= 3) {
+  // Deterministically construct framePrefix, targetChunks, frameSuffix, and words in TypeScript
+  // directly from targetSentence whenever targetChunks is missing or doesn't reconstruct targetSentence 100%
+  if (
+    rawTargetChunks.length >= 4 &&
+    doesChunksReconstructSentence(framePrefix, rawTargetChunks, frameSuffix, cleanAnswer)
+  ) {
     targetChunks = enforceSingleWordDominantChunks(rawTargetChunks);
-    if (!frameSuffix) {
-      frameSuffix = terminalPunct;
-    } else if (!/[.!?]$/.test(frameSuffix)) {
-      frameSuffix = `${frameSuffix}${terminalPunct}`;
-    }
-    if (Array.isArray(it?.distractorChunks)) {
-      distractorChunks = it.distractorChunks
-        .map((c: any) => normalizeTileChunk(c))
-        .filter((c: string) => Boolean(c) && !targetChunks.includes(c));
+    if (!doesChunksReconstructSentence(framePrefix, targetChunks, frameSuffix, cleanAnswer)) {
+      const derived = deriveFrameAndChunksFromSentence(
+        cleanAnswer,
+        idx,
+        it?.distractorWord,
+        it?.distractorChunks
+      );
+      framePrefix = derived.framePrefix;
+      frameSuffix = derived.frameSuffix;
+      targetChunks = derived.targetChunks;
+      distractorChunks = derived.distractorChunks;
+    } else {
+      if (typeof it?.distractorWord === 'string' && it.distractorWord.trim()) {
+        const cleanDist = normalizeTileChunk(it.distractorWord);
+        if (cleanDist && !targetChunks.includes(cleanDist)) {
+          distractorChunks = [cleanDist];
+        }
+      }
+      if (distractorChunks.length === 0 && Array.isArray(it?.distractorChunks)) {
+        distractorChunks = it.distractorChunks
+          .map((c: any) => normalizeTileChunk(c))
+          .filter((c: string) => Boolean(c) && !targetChunks.includes(c));
+      }
     }
   } else {
-    const derived = deriveFrameAndChunksFromSentence(cleanAnswer, idx);
+    const derived = deriveFrameAndChunksFromSentence(
+      cleanAnswer,
+      idx,
+      it?.distractorWord,
+      it?.distractorChunks
+    );
     framePrefix = derived.framePrefix;
     frameSuffix = derived.frameSuffix;
     targetChunks = derived.targetChunks;
@@ -1281,6 +1362,7 @@ export function normalizeBuildSentenceItem(
     frameSuffix,
     targetChunks,
     distractorChunks,
+    ...(distractorChunks[0] ? { distractorWord: distractorChunks[0] } : {}),
     words: finalScrambled,
     scrambledWords: finalScrambled,
     targetSentence: cleanAnswer,
@@ -1352,8 +1434,10 @@ export function normalizeTaskContent(taskType: string, rawTask: any): any {
         ...task,
         title: cw.title,
         text: cw.text,
+        passage: cw.passage,
         totalBlanks: cw.totalBlanks,
         blanks: cw.blanks,
+        ...(cw.isManualDevEdit ? { isManualDevEdit: true } : {}),
       };
     }
 
@@ -2678,13 +2762,24 @@ export function normalizeQuestionBankItem(rawItem: any, fallbackTaskType?: strin
   };
 }
 
-export function normalizeTaskData(raw: any, fallbackTaskType?: string): any {
+export function normalizeTaskData(
+  raw: any,
+  fallbackTaskType?: string,
+  options?: { coachMode?: boolean }
+): any {
   if (!raw || typeof raw !== 'object') return raw;
   const taskType = canonicalizeTaskType(raw.taskType || fallbackTaskType);
   const baseObj =
     raw.content && typeof raw.content === 'object'
-      ? { ...raw, ...raw.content }
-      : { ...raw };
+      ? {
+          ...raw,
+          ...raw.content,
+          ...(options?.coachMode ? { coachMode: true, mode: 'coach' } : {}),
+        }
+      : {
+          ...raw,
+          ...(options?.coachMode ? { coachMode: true, mode: 'coach' } : {}),
+        };
 
   const level = normalizeDifficultyLabel(raw.level || baseObj.level || raw.difficulty);
   const topic = normalizeTopicLabel(raw.topic || baseObj.topic, baseObj);

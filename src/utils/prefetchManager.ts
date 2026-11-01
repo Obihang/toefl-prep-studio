@@ -14,9 +14,20 @@ export type PrefetchedItem = {
 
 export type PrefetchQueue = Record<string, PrefetchedItem[]>;
 
-const STORAGE_KEY = 'toefl_prefetched_queue_v3';
-const COACH_STORAGE_KEY = 'toefl_prefetched_coach_queue_v1';
+const STORAGE_KEY = 'toefl_prefetched_queue_v4';
+const COACH_STORAGE_KEY = 'toefl_prefetched_coach_queue_v2';
 const CACHE_TTL_MS = 2 * 60 * 60 * 1000;
+
+if (typeof window !== 'undefined') {
+  try {
+    sessionStorage.removeItem('toefl_prefetched_queue_v3');
+    sessionStorage.removeItem('toefl_prefetched_coach_queue_v1');
+    localStorage.removeItem('toefl_prefetched_queue_v3');
+    localStorage.removeItem('toefl_prefetched_coach_queue_v1');
+  } catch {
+    // ignore storage errors
+  }
+}
 
 function getStorageKeyForMode(mode: 'exam' | 'coach' = 'exam'): string {
   return mode === 'coach' ? COACH_STORAGE_KEY : STORAGE_KEY;
