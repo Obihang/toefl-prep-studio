@@ -117,7 +117,32 @@ export function getPracticeHistory(): PracticeRecord[] {
     if (!Array.isArray(parsed)) return [];
 
     let anyRepaired = false;
-    const sanitized = parsed.map((item) => {
+    const examModeOnly = parsed.filter((item) => {
+      if (!item || typeof item !== 'object') {
+        anyRepaired = true;
+        return false;
+      }
+      if ((item as any).practiceMode === 'coach' || (item as any).mode === 'coach') {
+        anyRepaired = true;
+        return false;
+      }
+      if ((item as any).isMockExam === true) {
+        anyRepaired = true;
+        return false;
+      }
+      const title = String(item.taskTitle || '');
+      if (
+        title.startsWith('Full Mock Test') ||
+        title.startsWith('Full-Length 2026 TOEFL iBT® Mock Exam') ||
+        title.includes('(Timed Out)')
+      ) {
+        anyRepaired = true;
+        return false;
+      }
+      return true;
+    });
+
+    const sanitized = examModeOnly.map((item) => {
       const { record, changed } = sanitizePracticeRecord(item);
       if (changed) anyRepaired = true;
       return record;
@@ -223,7 +248,10 @@ export function isQuestionCompleted(question: any, completedIds?: string[] | Set
   return false;
 }
 
-export async function savePracticeRecord(record: Omit<PracticeRecord, 'id' | 'date'>): Promise<PracticeRecord> {
+export async function savePracticeRecord(
+  record: Omit<PracticeRecord, 'id' | 'date'>,
+  practiceModeOverride?: 'exam' | 'coach'
+): Promise<PracticeRecord> {
   const { record: fullRecord } = sanitizePracticeRecord({
     ...record,
     rawScore: record.rawScore ?? record.score,
@@ -231,6 +259,25 @@ export async function savePracticeRecord(record: Omit<PracticeRecord, 'id' | 'da
     id: 'rec-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
     date: new Date().toISOString(),
   });
+
+  // 1. Do NOT save Coach & Marathon Mode scores into official scoreHistory (`toefl_score_history`)
+  const activeMode =
+    practiceModeOverride ||
+    (record as any)?.practiceMode ||
+    (typeof window !== 'undefined' && localStorage.getItem('toefl_practice_mode') === 'coach'
+      ? 'coach'
+      : 'exam');
+  if (activeMode === 'coach') {
+    return fullRecord;
+  }
+
+  // 2. Do NOT push Full Mock Test entries into single-task Section Practice scoreHistory (`toefl_score_history`)
+  const isInMockExam =
+    Boolean((record as any)?.isMockExam) ||
+    (typeof window !== 'undefined' && localStorage.getItem('toefl_in_mock_test') === 'true');
+  if (isInMockExam) {
+    return fullRecord;
+  }
 
   try {
     const history = getPracticeHistory();
@@ -361,6 +408,8 @@ export function clearAllUserProgress() {
     localStorage.removeItem('toefl_mistakes');
     localStorage.removeItem(`toefl_mistakes_${getCurrentUserId()}`);
     localStorage.removeItem('toefl_exam_history');
+    localStorage.removeItem('toefl_mock_set_scores_v1');
+    localStorage.removeItem('toefl_exam_used_ids');
     localStorage.removeItem('toefl_adaptive_difficulty');
     localStorage.removeItem('toefl_difficulty_history');
     localStorage.removeItem(`toefl_daily_plan_${getCurrentUserId()}`);
@@ -381,6 +430,7 @@ export function clearAllUserProgress() {
     window.dispatchEvent(new CustomEvent('toefl_completed_questions_updated'));
     window.dispatchEvent(new CustomEvent('toefl_mistakes_updated'));
     window.dispatchEvent(new CustomEvent('toefl_daily_plan_updated'));
+    window.dispatchEvent(new CustomEvent('toefl_exam_history_updated'));
     window.dispatchEvent(new CustomEvent('toefl_progress_reset'));
   } catch (e) {
     console.warn('Failed to clear all user progress:', e);

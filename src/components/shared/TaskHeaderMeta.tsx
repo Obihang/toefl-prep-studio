@@ -91,7 +91,7 @@ export const TaskReportButton: React.FC<{ task: any }> = ({ task }) => {
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-800 hover:bg-teal-700 text-slate-100 hover:text-white border border-slate-700 transition-colors cursor-pointer whitespace-nowrap"
           >
             <Edit3 className="w-3 h-3 text-teal-300" />
-            <span>✏️ Edit Question</span>
+            <span>Edit Question</span>
           </button>
 
           {!confirmingDelete ? (
@@ -102,7 +102,7 @@ export const TaskReportButton: React.FC<{ task: any }> = ({ task }) => {
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-800 hover:bg-rose-700 text-rose-300 hover:text-white border border-slate-700 transition-colors cursor-pointer whitespace-nowrap"
             >
               <Trash2 className="w-3 h-3" />
-              <span>🗑️ Delete Question</span>
+              <span>Delete Question</span>
             </button>
           ) : (
             <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-rose-950 border border-rose-700 text-[11px] font-bold text-rose-200 whitespace-nowrap">

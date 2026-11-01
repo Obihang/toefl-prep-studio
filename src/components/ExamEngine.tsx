@@ -33,7 +33,6 @@ import { AcademicDiscussionView } from './tasks/AcademicDiscussionView';
 import { ListenRepeatView } from './tasks/ListenRepeatView';
 import { SpeakingInterviewView } from './tasks/SpeakingInterviewView';
 import {
-  savePracticeRecord,
   convertScaledToBand6,
   convertOverall120ToBand6,
   getCefrFromBand6,
@@ -49,6 +48,7 @@ import {
   generateAndSaveNewAiMockExamSet,
   getMockSetScores,
   saveMockSetScore,
+  saveExamResult,
   MockSetScoreSummary,
 } from '../utils/examStorage';
 import {
@@ -1367,7 +1367,11 @@ export const ExamEngine: React.FC = () => {
   });
 
   // Sync static question bank shards and Full Mock Exam Sets database on mount
+  // Also set `toefl_in_mock_test` flag so single-task views inside ExamEngine never write to single-task `scoreHistory`
   useEffect(() => {
+    try {
+      localStorage.setItem('toefl_in_mock_test', 'true');
+    } catch {}
     syncCuratedQuestionBank().catch(() => {});
     const loadSets = () => {
       syncAndGetMockExamSets()
@@ -1379,8 +1383,15 @@ export const ExamEngine: React.FC = () => {
     };
     loadSets();
     window.addEventListener('toefl_mock_sets_updated', loadSets);
+    window.addEventListener('toefl_exam_history_updated', loadSets);
+    window.addEventListener('toefl_progress_reset', loadSets);
     return () => {
+      try {
+        localStorage.setItem('toefl_in_mock_test', 'false');
+      } catch {}
       window.removeEventListener('toefl_mock_sets_updated', loadSets);
+      window.removeEventListener('toefl_exam_history_updated', loadSets);
+      window.removeEventListener('toefl_progress_reset', loadSets);
     };
   }, []);
 
@@ -1416,16 +1427,38 @@ export const ExamEngine: React.FC = () => {
     Speaking: false,
   });
 
-  // Persist completed Mock Exam Set score report when exam finishes
+  // Persist completed Full Mock Exam result into dedicated Mock Exam History (`toefl_exam_history`) when exam finishes
   const savedAttemptRef = useRef<boolean>(false);
   useEffect(() => {
     if (isTestComplete && !savedAttemptRef.current) {
       savedAttemptRef.current = true;
+      const totalScore =
+        sectionScores.Reading + sectionScores.Listening + sectionScores.Writing + sectionScores.Speaking;
+      const overallBand = convertOverall120ToBand6(totalScore);
+      const cefr = getCefrFromBand6(overallBand);
+      const setIdx = activeMockSet ? mockSets.findIndex((s) => s.id === activeMockSet.id) : -1;
+      const setTitle = activeMockSet
+        ? activeMockSet.title || (setIdx >= 0 ? `Mock Exam #${setIdx + 1}` : 'Full Mock Exam')
+        : 'Quick Randomized Full Mock Exam';
+
+      saveExamResult({
+        setId: activeMockSet ? activeMockSet.id : `quick_mock_${Date.now()}`,
+        setTitle,
+        overallBand6: overallBand,
+        cefrCode: cefr.code,
+        cefrName: cefr.name,
+        totalScore120: totalScore,
+        sectionScores: {
+          Reading: sectionScores.Reading,
+          Listening: sectionScores.Listening,
+          Writing: sectionScores.Writing,
+          Speaking: sectionScores.Speaking,
+        },
+        readingTrack: readingAdaptiveTrack,
+        listeningTrack: listeningAdaptiveTrack,
+      });
+
       if (activeMockSet) {
-        const totalScore =
-          sectionScores.Reading + sectionScores.Listening + sectionScores.Writing + sectionScores.Speaking;
-        const overallBand = convertOverall120ToBand6(totalScore);
-        const cefr = getCefrFromBand6(overallBand);
         saveMockSetScore(
           activeMockSet.id,
           sectionScores,
@@ -1440,7 +1473,7 @@ export const ExamEngine: React.FC = () => {
     } else if (!isTestComplete) {
       savedAttemptRef.current = false;
     }
-  }, [isTestComplete, activeMockSet, sectionScores, readingAdaptiveTrack, listeningAdaptiveTrack]);
+  }, [isTestComplete, activeMockSet, mockSets, sectionScores, readingAdaptiveTrack, listeningAdaptiveTrack]);
 
   const currentSection = OFFICIAL_SECTIONS_2026[currentSectionIndex];
   const currentSectionTasks = currentSection.tasks;
@@ -1603,31 +1636,11 @@ export const ExamEngine: React.FC = () => {
       setCurrentTaskIndexInSection(0);
       setTimeLeft(getSectionTime(OFFICIAL_SECTIONS_2026[nextIdx]));
     } else {
-      // Complete mock test
+      // Complete mock test — result is saved strictly to dedicated Mock Exam History (`toefl_exam_history`),
+      // and NEVER pushed into single-task Section Practice `scoreHistory` (`toefl_score_history`).
       setIsTestComplete(true);
-
-      // Only save practice records for sections that were NOT completed by the task view
-      OFFICIAL_SECTIONS_2026.forEach((sec) => {
-        const key = sec.sectionKey;
-        if (!completedSections[key]) {
-          const secTime = getSectionTime(sec);
-          savePracticeRecord({
-            taskType: sec.type,
-            taskTitle: activeMockSet
-              ? `${activeMockSet.title} - ${key} (Timed Out)`
-              : `Full Mock Test - ${key} (Timed Out)`,
-            section: key,
-            score: 0,
-            maxScore: 30,
-            scaledScore30: 0,
-            bandScore6: 1.0,
-            timeSpentSeconds: secTime,
-            feedbackSummary: `Mock Test ${key} Section: timed out unfinished (0/30 · Band 1.0/6.0)`,
-          });
-        }
-      });
     }
-  }, [currentSectionIndex, completedSections, getSectionTime, activeMockSet]);
+  }, [currentSectionIndex, getSectionTime]);
 
   // Handle section timer countdown
   useEffect(() => {

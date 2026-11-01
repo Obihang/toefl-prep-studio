@@ -739,3 +739,147 @@ export function saveMockSetScore(
   }
   return updated;
 }
+
+export const EXAM_HISTORY_STORAGE_KEY = 'toefl_exam_history';
+
+export interface FullMockExamResult {
+  id: string;
+  setId: string;
+  setTitle: string;
+  date: string;
+  completedAt: number;
+  overallBand6: number;
+  cefrCode: string;
+  cefrName: string;
+  totalScore120: number;
+  sectionScores: {
+    Reading: number;
+    Listening: number;
+    Writing: number;
+    Speaking: number;
+  };
+  readingTrack?: 'higher' | 'standard';
+  listeningTrack?: 'higher' | 'standard';
+}
+
+/**
+ * Retrieves all completed Full Mock Test attempts from `toefl_exam_history`.
+ * Also backfills from `toefl_mock_set_scores_v1` if `toefl_exam_history` is empty.
+ */
+export function getExamHistory(): FullMockExamResult[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(EXAM_HISTORY_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+
+    // Backfill from per-set score summaries if exam history array was not yet populated
+    const setScores = getMockSetScores();
+    const entries = Object.values(setScores);
+    if (entries.length === 0) return [];
+
+    const editedTitles = getEditedMockSetTitles();
+    const backfilled: FullMockExamResult[] = entries
+      .filter((s) => s && s.lastReport)
+      .map((s) => {
+        const curatedMatch = CURATED_MOCK_EXAM_SETS.find((c) => c.id === s.setId);
+        const setNumMatch = s.setId.match(/mock_set_(\d+)/);
+        const fallbackTitle = curatedMatch
+          ? curatedMatch.title
+          : setNumMatch
+          ? `Mock Exam #${setNumMatch[1]}`
+          : 'Full Mock Exam';
+        const completedAt = s.lastReport.completedAt || Date.now();
+        return {
+          id: `mock-hist-${s.setId}-${completedAt}`,
+          setId: s.setId,
+          setTitle: editedTitles[s.setId] || fallbackTitle,
+          date: new Date(completedAt).toISOString(),
+          completedAt,
+          overallBand6: s.lastReport.overallBand6,
+          cefrCode: s.lastReport.cefrCode,
+          cefrName: s.lastReport.cefrName,
+          totalScore120: s.lastReport.totalScore120,
+          sectionScores: {
+            Reading: s.lastReport.sectionScores?.Reading || 0,
+            Listening: s.lastReport.sectionScores?.Listening || 0,
+            Writing: s.lastReport.sectionScores?.Writing || 0,
+            Speaking: s.lastReport.sectionScores?.Speaking || 0,
+          },
+          readingTrack: s.lastReport.readingTrack,
+          listeningTrack: s.lastReport.listeningTrack,
+        };
+      })
+      .sort((a, b) => b.completedAt - a.completedAt);
+
+    if (backfilled.length > 0) {
+      localStorage.setItem(EXAM_HISTORY_STORAGE_KEY, JSON.stringify(backfilled));
+    }
+    return backfilled;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Saves a completed 4-section Full Mock Exam result into `toefl_exam_history`.
+ */
+export function saveExamResult(
+  input: Omit<FullMockExamResult, 'id' | 'date' | 'completedAt'> & {
+    id?: string;
+    date?: string;
+    completedAt?: number;
+  }
+): FullMockExamResult {
+  const now = input.completedAt || Date.now();
+  const entry: FullMockExamResult = {
+    id: input.id || `exam-${now}-${Math.random().toString(36).slice(2, 6)}`,
+    setId: input.setId || `mock_${now}`,
+    setTitle: input.setTitle || 'Full Mock Exam',
+    date: input.date || new Date(now).toISOString(),
+    completedAt: now,
+    overallBand6: input.overallBand6,
+    cefrCode: input.cefrCode,
+    cefrName: input.cefrName,
+    totalScore120: input.totalScore120,
+    sectionScores: {
+      Reading: input.sectionScores?.Reading || 0,
+      Listening: input.sectionScores?.Listening || 0,
+      Writing: input.sectionScores?.Writing || 0,
+      Speaking: input.sectionScores?.Speaking || 0,
+    },
+    readingTrack: input.readingTrack,
+    listeningTrack: input.listeningTrack,
+  };
+
+  if (typeof window !== 'undefined') {
+    try {
+      const existing = getExamHistory();
+      const updated = [entry, ...existing].slice(0, 100);
+      localStorage.setItem(EXAM_HISTORY_STORAGE_KEY, JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('toefl_exam_history_updated'));
+    } catch (err) {
+      console.warn('[examStorage] Failed to save Full Mock Exam result:', err);
+    }
+  }
+
+  return entry;
+}
+
+/**
+ * Clears all saved Full Mock Exam history and per-set score summaries.
+ */
+export function clearExamHistory(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(EXAM_HISTORY_STORAGE_KEY);
+    localStorage.removeItem(MOCK_SET_SCORES_STORAGE_KEY);
+    localStorage.removeItem('toefl_exam_used_ids');
+    window.dispatchEvent(new CustomEvent('toefl_exam_history_updated'));
+  } catch {}
+}
+

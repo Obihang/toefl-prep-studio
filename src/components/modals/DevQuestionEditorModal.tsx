@@ -9,6 +9,10 @@ import {
   isValidAcademicTopic,
 } from '../../constants/filters';
 import { updateQuestionInBank, deleteQuestionFromBank } from '../../utils/questionBankStorage';
+import {
+  extractBlanksFromBracketedText,
+  syncBracketedTextWithBlanks,
+} from '../../utils/taskNormalizer';
 
 interface DevQuestionEditorModalProps {
   isOpen: boolean;
@@ -33,6 +37,7 @@ export const DevQuestionEditorModal: React.FC<DevQuestionEditorModalProps> = ({
   const [primaryTextKey, setPrimaryTextKey] = useState<string | null>(null);
   const [primaryTextValue, setPrimaryTextValue] = useState<string>('');
   const [jsonText, setJsonText] = useState<string>('');
+  const [lastEditedSource, setLastEditedSource] = useState<'primary' | 'json' | null>(null);
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [saving, setSaving] = useState<boolean>(false);
   const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
@@ -43,6 +48,7 @@ export const DevQuestionEditorModal: React.FC<DevQuestionEditorModalProps> = ({
     setConfirmDelete(false);
     setSaveSuccess(false);
     setJsonError(null);
+    setLastEditedSource(null);
 
     setTitle(String(task.title || ''));
     const rawLvl = String(task.level || task.difficulty || 'intermediate').toLowerCase();
@@ -50,27 +56,35 @@ export const DevQuestionEditorModal: React.FC<DevQuestionEditorModalProps> = ({
     const rawTop = String(task.topic || task.category || 'science-tech').toLowerCase();
     setTopic(isValidAcademicTopic(rawTop) ? rawTop : 'science-tech');
 
-    if (typeof task.passage === 'string') {
+    const initialCopy = { ...task };
+
+    if (typeof initialCopy.passage === 'string') {
       setPrimaryTextKey('passage');
-      setPrimaryTextValue(task.passage);
-    } else if (typeof task.text === 'string') {
+      setPrimaryTextValue(initialCopy.passage);
+    } else if (typeof initialCopy.text === 'string') {
       setPrimaryTextKey('text');
-      setPrimaryTextValue(task.text);
-    } else if (typeof task.script === 'string') {
+      const synced = syncBracketedTextWithBlanks(initialCopy.text, initialCopy.blanks, false);
+      initialCopy.text = synced.text;
+      if (synced.blanks.length > 0) {
+        initialCopy.blanks = synced.blanks;
+        initialCopy.totalBlanks = synced.blanks.length;
+      }
+      setPrimaryTextValue(initialCopy.text);
+    } else if (typeof initialCopy.script === 'string') {
       setPrimaryTextKey('script');
-      setPrimaryTextValue(task.script);
-    } else if (typeof task.professorPrompt === 'string') {
+      setPrimaryTextValue(initialCopy.script);
+    } else if (typeof initialCopy.professorPrompt === 'string') {
       setPrimaryTextKey('professorPrompt');
-      setPrimaryTextValue(task.professorPrompt);
-    } else if (typeof task.situation === 'string') {
+      setPrimaryTextValue(initialCopy.professorPrompt);
+    } else if (typeof initialCopy.situation === 'string') {
       setPrimaryTextKey('situation');
-      setPrimaryTextValue(task.situation);
+      setPrimaryTextValue(initialCopy.situation);
     } else {
       setPrimaryTextKey(null);
       setPrimaryTextValue('');
     }
 
-    setJsonText(JSON.stringify(task, null, 2));
+    setJsonText(JSON.stringify(initialCopy, null, 2));
   }, [task, isOpen]);
 
   if (!isOpen || !task) return null;
@@ -79,12 +93,54 @@ export const DevQuestionEditorModal: React.FC<DevQuestionEditorModalProps> = ({
 
   const handlePrimaryTextChange = (val: string) => {
     setPrimaryTextValue(val);
+    setLastEditedSource('primary');
     if (!primaryTextKey) return;
     try {
       const parsed = JSON.parse(jsonText);
       parsed[primaryTextKey] = val;
+      if (
+        primaryTextKey === 'text' &&
+        (task?.taskType === 'complete-words' || Array.isArray(parsed.blanks) || /\[[^\]]+\]/.test(val))
+      ) {
+        const updatedBlanks = extractBlanksFromBracketedText(val);
+        parsed.blanks = updatedBlanks;
+        parsed.totalBlanks = updatedBlanks.length;
+      }
       setJsonText(JSON.stringify(parsed, null, 2));
       setJsonError(null);
+    } catch {}
+  };
+
+  const handleJsonTextChange = (rawJson: string) => {
+    setJsonText(rawJson);
+    setLastEditedSource('json');
+    setJsonError(null);
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (!parsed || typeof parsed !== 'object') return;
+      if (typeof parsed.title === 'string') setTitle(parsed.title);
+      if (typeof parsed.level === 'string' && isValidLevel(parsed.level)) setLevel(parsed.level);
+      if (typeof parsed.topic === 'string' && isValidAcademicTopic(parsed.topic)) setTopic(parsed.topic);
+
+      if (primaryTextKey && typeof parsed[primaryTextKey] === 'string') {
+        if (
+          primaryTextKey === 'text' &&
+          Array.isArray(parsed.blanks) &&
+          parsed.blanks.length > 0
+        ) {
+          // If the user edited `blanks` in JSON while `parsed.text` stayed equal to `primaryTextValue`,
+          // reconstruct `text` from the edited `blanks` so `Primary Content (text)` updates immediately!
+          const textChangedInJson = parsed.text !== primaryTextValue;
+          const synced = syncBracketedTextWithBlanks(
+            parsed.text,
+            parsed.blanks,
+            !textChangedInJson
+          );
+          setPrimaryTextValue(synced.text);
+        } else {
+          setPrimaryTextValue(parsed[primaryTextKey]);
+        }
+      }
     } catch {}
   };
 
@@ -110,9 +166,31 @@ export const DevQuestionEditorModal: React.FC<DevQuestionEditorModalProps> = ({
         level,
         difficulty: level,
         topic,
+        isEdited: true,
+        updatedAt: Date.now(),
       };
+
       if (primaryTextKey && primaryTextValue.trim()) {
-        mergedPayload[primaryTextKey] = primaryTextValue;
+        if (
+          primaryTextKey === 'text' &&
+          (task?.taskType === 'complete-words' ||
+            Array.isArray(mergedPayload.blanks) ||
+            /\[[^\]]+\]/.test(primaryTextValue))
+        ) {
+          const preferBlanks =
+            lastEditedSource === 'json' && parsedJson.text === task.text;
+          const synced = syncBracketedTextWithBlanks(
+            preferBlanks ? String(parsedJson.text || primaryTextValue) : primaryTextValue,
+            mergedPayload.blanks,
+            preferBlanks
+          );
+          mergedPayload.text = synced.text;
+          mergedPayload.blanks = synced.blanks;
+          mergedPayload.totalBlanks = synced.blanks.length;
+          mergedPayload._preferBlanks = false;
+        } else {
+          mergedPayload[primaryTextKey] = primaryTextValue;
+        }
       }
 
       const saved = await updateQuestionInBank(questionId, mergedPayload, mode);
@@ -120,7 +198,7 @@ export const DevQuestionEditorModal: React.FC<DevQuestionEditorModalProps> = ({
       onSaved(saved);
       setTimeout(() => {
         onClose();
-      }, 500);
+      }, 400);
     } catch (err: any) {
       setJsonError(err?.message || 'Failed to save question changes.');
     } finally {
@@ -268,10 +346,7 @@ export const DevQuestionEditorModal: React.FC<DevQuestionEditorModalProps> = ({
             <textarea
               rows={12}
               value={jsonText}
-              onChange={(e) => {
-                setJsonText(e.target.value);
-                setJsonError(null);
-              }}
+              onChange={(e) => handleJsonTextChange(e.target.value)}
               spellCheck={false}
               className="w-full text-xs font-mono border border-slate-300 rounded-xl p-3 bg-slate-950 text-emerald-300 focus:border-teal-500 outline-hidden leading-relaxed"
             />
@@ -300,7 +375,7 @@ export const DevQuestionEditorModal: React.FC<DevQuestionEditorModalProps> = ({
                 className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>🗑️ Delete Question</span>
+                <span>Delete Question</span>
               </button>
             ) : (
               <div className="inline-flex items-center gap-2 bg-rose-950 text-white px-3 py-1.5 rounded-xl text-xs font-bold">
@@ -337,7 +412,7 @@ export const DevQuestionEditorModal: React.FC<DevQuestionEditorModalProps> = ({
                 className="px-5 py-2 bg-teal-800 hover:bg-teal-900 disabled:opacity-50 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors shadow-xs"
               >
                 <Save className="w-3.5 h-3.5 text-teal-300" />
-                <span>{saving ? 'Saving...' : '💾 Save Changes'}</span>
+                <span>{saving ? 'Saving...' : 'Save Changes'}</span>
               </button>
             </div>
           </div>

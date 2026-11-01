@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Target, Trophy, Flame, CheckCircle2, Circle, ArrowRight, Play, Sparkles, Clock, AlertTriangle, BookOpen, FileText, ChevronDown, ChevronUp, Award, Trash2 } from 'lucide-react';
 import { PracticeRecord, getUserStats, convertScaledToBand6, calculateMyBestScores, getCompletedQuestionIds, clearAllUserProgress } from '../../../utils/scoreTracker';
+import { getExamHistory, clearExamHistory, FullMockExamResult } from '../../../utils/examStorage';
 import { getMistakesList } from '../../../utils/mistakesTracker';
 import { HighlightedText } from '../../shared/FeedbackComparison';
 import { streak } from '../../../utils/dashboardStats';
@@ -20,6 +21,7 @@ interface OverviewTabProps {
   toeflEstimate: { overallScore: number; cefrCode: string; overallBand6: number };
   stats: any;
   history?: PracticeRecord[];
+  examHistory?: FullMockExamResult[];
   completedDays?: string[];
   weakAreas?: Array<{ topic: string; errorCount: number; section: string }>;
   onOpenTask?: (taskType: string) => void;
@@ -35,6 +37,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   toeflEstimate,
   stats,
   history = [],
+  examHistory: examHistoryProp,
   completedDays = [],
   weakAreas = [],
   onOpenTask,
@@ -51,12 +54,31 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   const weeklyCompleted = history.length === 0 ? 0 : (stats?.weeklyCompleted || history.length);
   const weeklyGoal = parseInt(localStorage.getItem('WEEKLY_GOAL') || '5', 10);
   const myBest = calculateMyBestScores(history);
+  const examHistory = useMemo(
+    () => (Array.isArray(examHistoryProp) ? examHistoryProp : getExamHistory()),
+    [examHistoryProp]
+  );
+
+  const bestMockExam = useMemo(() => {
+    if (examHistory.length === 0) return null;
+    let best = examHistory[0];
+    for (const item of examHistory) {
+      if (
+        item.totalScore120 > best.totalScore120 ||
+        (item.totalScore120 === best.totalScore120 && item.overallBand6 > best.overallBand6)
+      ) {
+        best = item;
+      }
+    }
+    return best;
+  }, [examHistory]);
 
   const [dailyPlan, setDailyPlan] = useState<DailyStudyPlan>(() =>
     generateDailyPlan(history, mistakes, vocab, studyGoals)
   );
   const [expandedAttemptId, setExpandedAttemptId] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [historyModeTab, setHistoryModeTab] = useState<'section_practice' | 'full_mock'>('section_practice');
 
   useEffect(() => {
     const updatePlan = () => {
@@ -373,21 +395,24 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
         <StreakCalendarChart completedDays={completedDays} />
       </div>
 
-      {/* 5. Recent Attempts */}
+      {/* 5. Recent Attempts (2-Tab Switcher: Section Practice History vs Full Mock Exam History) */}
       <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-2xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h4 className="font-bold text-slate-900 text-sm">Recent Practice Attempts</h4>
-            <p className="text-xs text-slate-500">Your latest logged test sessions</p>
+            <h4 className="font-bold text-slate-900 text-sm">Official Score History</h4>
+            <p className="text-xs text-slate-500">
+              Strictly separated 🎯 Section Practice (Exam Mode) and 🏆 Full Mock Exam records (Coach Mode excluded)
+            </p>
           </div>
           <div className="flex items-center gap-2.5 flex-wrap">
-            {(history.length > 0 || mistakes.length > 0 || getMistakesList().length > 0 || getCompletedQuestionIds().length > 0) && (
+            {(history.length > 0 || examHistory.length > 0 || mistakes.length > 0 || getMistakesList().length > 0 || getCompletedQuestionIds().length > 0) && (
               confirmingReset ? (
                 <div className="flex items-center gap-1.5 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded-lg text-xs">
                   <span className="text-rose-800 font-semibold">Confirm Reset Everything?</span>
                   <button
                     type="button"
                     onClick={() => {
+                      clearExamHistory();
                       if (onResetProgress) {
                         onResetProgress();
                       } else {
@@ -430,119 +455,246 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
           </div>
         </div>
 
-        {recentAttemptsList.length === 0 ? (
-          <div className="h-28 flex flex-col items-center justify-center text-xs text-slate-400">
-            <Clock className="w-6 h-6 text-slate-300 mb-1" />
-            <span>No practice attempts recorded yet. Start practicing to build your score history!</span>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-100 text-slate-400 font-semibold">
-                  <th className="pb-2">Date</th>
-                  <th className="pb-2">Section</th>
-                  <th className="pb-2">Task</th>
-                  <th className="pb-2 text-right">Score</th>
-                  <th className="pb-2 text-right">Saved Response</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {recentAttemptsList.map((att, idx) => {
-                  const scaled30 = typeof att.scaledScore30 === 'number' ? att.scaledScore30 : Math.min(30, Number(att.score || 0));
-                  const band6 = att.bandScore6 ?? convertScaledToBand6(scaled30, att.section);
-                  const rowKey = att.id || `att-${idx}`;
-                  const hasSavedResponse = Boolean(att.studentResponse && att.studentResponse.trim().length > 0);
-                  const isExpanded = expandedAttemptId === rowKey;
-                  const grammarErrors = Array.isArray(att.grammarErrors) ? att.grammarErrors : [];
-                  return (
-                    <React.Fragment key={rowKey}>
-                      <tr className="hover:bg-slate-50/60 transition-colors">
-                        <td className="py-2.5 text-slate-500">{new Date(att.date || Date.now()).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
-                        <td className="py-2.5 font-semibold text-slate-800">{att.section}</td>
-                        <td className="py-2.5 text-slate-600 truncate max-w-xs">{att.taskTitle || att.taskType}</td>
-                        <td className="py-2.5 text-right font-bold text-teal-900 font-mono">
-                          Band {band6.toFixed(1)} · {scaled30} / 30
-                        </td>
-                        <td className="py-2.5 text-right whitespace-nowrap pl-2">
-                          {hasSavedResponse ? (
-                            <button
-                              type="button"
-                              onClick={() => setExpandedAttemptId(isExpanded ? null : rowKey)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-md transition-colors cursor-pointer"
-                            >
-                              <FileText className="w-3 h-3 text-teal-700" />
-                              <span>{isExpanded ? 'Hide Saved Response' : '📄 View Saved Response'}</span>
-                              {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                            </button>
-                          ) : (
-                            <span className="text-[11px] text-slate-300">—</span>
-                          )}
-                        </td>
-                      </tr>
-                      {hasSavedResponse && isExpanded && (
-                        <tr className="bg-slate-50/80">
-                          <td colSpan={5} className="p-4 border-t border-slate-100">
-                            <div className="space-y-4">
-                              {att.feedbackSummary && (
-                                <div className="text-xs text-slate-700 bg-white border border-slate-200 rounded-lg p-3 leading-relaxed">
-                                  <span className="font-bold text-slate-900 mr-1.5">Evaluation Summary:</span>
-                                  {att.feedbackSummary}
-                                </div>
-                              )}
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="space-y-1.5">
-                                  <h5 className="text-[11px] font-bold uppercase tracking-wider text-slate-800">
-                                    Your Saved Response {grammarErrors.length > 0 ? `(${grammarErrors.length} Highlighted Fixes)` : ''}
-                                  </h5>
-                                  <div className="p-3.5 bg-white border border-slate-200 rounded-lg text-xs leading-relaxed text-slate-900 whitespace-pre-line">
-                                    <HighlightedText text={att.studentResponse || ''} corrections={grammarErrors as any} />
+        {/* 2-Tab Switcher */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-200">
+          <button
+            type="button"
+            onClick={() => setHistoryModeTab('section_practice')}
+            className={`py-2 px-3 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-2 ${
+              historyModeTab === 'section_practice'
+                ? 'bg-white text-teal-900 shadow-2xs border border-teal-200/80'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <span>🎯 Section Practice History (Exam Mode)</span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-teal-50 text-teal-800 border border-teal-200">
+              {history.length}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setHistoryModeTab('full_mock')}
+            className={`py-2 px-3 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-2 ${
+              historyModeTab === 'full_mock'
+                ? 'bg-white text-teal-900 shadow-2xs border border-teal-200/80'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <span>🏆 Full Mock Exam History</span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-50 text-amber-900 border border-amber-200">
+              {examHistory.length}
+            </span>
+          </button>
+        </div>
+
+        {historyModeTab === 'section_practice' ? (
+          recentAttemptsList.length === 0 ? (
+            <div className="h-28 flex flex-col items-center justify-center text-xs text-slate-400">
+              <Clock className="w-6 h-6 text-slate-300 mb-1" />
+              <span>No Official Exam Mode section practice attempts recorded yet.</span>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100 text-slate-400 font-semibold">
+                    <th className="pb-2">Date</th>
+                    <th className="pb-2">Section</th>
+                    <th className="pb-2">Task</th>
+                    <th className="pb-2 text-right">Score</th>
+                    <th className="pb-2 text-right">Saved Response</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {recentAttemptsList.map((att, idx) => {
+                    const scaled30 = typeof att.scaledScore30 === 'number' ? att.scaledScore30 : Math.min(30, Number(att.score || 0));
+                    const band6 = att.bandScore6 ?? convertScaledToBand6(scaled30, att.section);
+                    const rowKey = att.id || `att-${idx}`;
+                    const hasSavedResponse = Boolean(att.studentResponse && att.studentResponse.trim().length > 0);
+                    const isExpanded = expandedAttemptId === rowKey;
+                    const grammarErrors = Array.isArray(att.grammarErrors) ? att.grammarErrors : [];
+                    return (
+                      <React.Fragment key={rowKey}>
+                        <tr className="hover:bg-slate-50/60 transition-colors">
+                          <td className="py-2.5 text-slate-500">{new Date(att.date || Date.now()).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                          <td className="py-2.5 font-semibold text-slate-800">{att.section}</td>
+                          <td className="py-2.5 text-slate-600 truncate max-w-xs">{att.taskTitle || att.taskType}</td>
+                          <td className="py-2.5 text-right font-bold text-teal-900 font-mono">
+                            Band {band6.toFixed(1)} · {scaled30} / 30
+                          </td>
+                          <td className="py-2.5 text-right whitespace-nowrap pl-2">
+                            {hasSavedResponse ? (
+                              <button
+                                type="button"
+                                onClick={() => setExpandedAttemptId(isExpanded ? null : rowKey)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-md transition-colors cursor-pointer"
+                              >
+                                <FileText className="w-3 h-3 text-teal-700" />
+                                <span>{isExpanded ? 'Hide Saved Response' : '📄 View Saved Response'}</span>
+                                {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                              </button>
+                            ) : (
+                              <span className="text-[11px] text-slate-300">—</span>
+                            )}
+                          </td>
+                        </tr>
+                        {hasSavedResponse && isExpanded && (
+                          <tr className="bg-slate-50/80">
+                            <td colSpan={5} className="p-4 border-t border-slate-100">
+                              <div className="space-y-4">
+                                {att.feedbackSummary && (
+                                  <div className="text-xs text-slate-700 bg-white border border-slate-200 rounded-lg p-3 leading-relaxed">
+                                    <span className="font-bold text-slate-900 mr-1.5">Evaluation Summary:</span>
+                                    {att.feedbackSummary}
                                   </div>
-                                </div>
-                                {att.modelAnswer && (
+                                )}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                   <div className="space-y-1.5">
-                                    <h5 className="text-[11px] font-bold uppercase tracking-wider text-teal-800 flex items-center gap-1">
-                                      <Award className="w-3.5 h-3.5 text-teal-600" />
-                                      <span>Band 6.0 Model Answer</span>
+                                    <h5 className="text-[11px] font-bold uppercase tracking-wider text-slate-800">
+                                      Your Saved Response {grammarErrors.length > 0 ? `(${grammarErrors.length} Highlighted Fixes)` : ''}
                                     </h5>
-                                    <div className="p-3.5 bg-teal-50/50 border border-teal-200 rounded-lg text-xs leading-relaxed text-teal-950 whitespace-pre-line">
-                                      {att.modelAnswer}
+                                    <div className="p-3.5 bg-white border border-slate-200 rounded-lg text-xs leading-relaxed text-slate-900 whitespace-pre-line">
+                                      <HighlightedText text={att.studentResponse || ''} corrections={grammarErrors as any} />
+                                    </div>
+                                  </div>
+                                  {att.modelAnswer && (
+                                    <div className="space-y-1.5">
+                                      <h5 className="text-[11px] font-bold uppercase tracking-wider text-teal-800 flex items-center gap-1">
+                                        <Award className="w-3.5 h-3.5 text-teal-600" />
+                                        <span>Band 6.0 Model Answer</span>
+                                      </h5>
+                                      <div className="p-3.5 bg-teal-50/50 border border-teal-200 rounded-lg text-xs leading-relaxed text-teal-950 whitespace-pre-line">
+                                        {att.modelAnswer}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                                {grammarErrors.length > 0 && (
+                                  <div className="space-y-2">
+                                    <h6 className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                                      Grammar &amp; Wording Fixes ({grammarErrors.length})
+                                    </h6>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                      {grammarErrors.map((err, i) => (
+                                        <div key={i} className="p-2.5 bg-white border border-slate-200 rounded-lg text-xs space-y-1">
+                                          <div className="flex items-baseline flex-wrap gap-1.5">
+                                            <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-900 line-through font-semibold">
+                                              &ldquo;{err.original}&rdquo;
+                                            </span>
+                                            <span className="text-slate-400 font-bold">→</span>
+                                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-900 font-bold">
+                                              &ldquo;{err.corrected}&rdquo;
+                                            </span>
+                                          </div>
+                                          <p className="text-[11px] text-slate-600 leading-snug">{err.explanation}</p>
+                                        </div>
+                                      ))}
                                     </div>
                                   </div>
                                 )}
                               </div>
-                              {grammarErrors.length > 0 && (
-                                <div className="space-y-2">
-                                  <h6 className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                                    Grammar &amp; Wording Fixes ({grammarErrors.length})
-                                  </h6>
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                    {grammarErrors.map((err, i) => (
-                                      <div key={i} className="p-2.5 bg-white border border-slate-200 rounded-lg text-xs space-y-1">
-                                        <div className="flex items-baseline flex-wrap gap-1.5">
-                                          <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-900 line-through font-semibold">
-                                            &ldquo;{err.original}&rdquo;
-                                          </span>
-                                          <span className="text-slate-400 font-bold">→</span>
-                                          <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-900 font-bold">
-                                            &ldquo;{err.corrected}&rdquo;
-                                          </span>
-                                        </div>
-                                        <p className="text-[11px] text-slate-600 leading-snug">{err.explanation}</p>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )
+        ) : (
+          <div className="space-y-4">
+            {/* Full Mock Exam MyBest® Summary Banner */}
+            <div className="p-4 bg-gradient-to-r from-slate-900 via-teal-950 to-emerald-950 text-white rounded-xl flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <Trophy className="w-5 h-5 text-amber-400 shrink-0" />
+                <div>
+                  <div className="text-xs font-bold text-amber-300 uppercase tracking-wider">
+                    Full Mock Exam MyBest® Overall Band &amp; Total Score
+                  </div>
+                  <div className="text-xs text-teal-200/90">
+                    {bestMockExam
+                      ? `${bestMockExam.setTitle} · CEFR ${bestMockExam.cefrCode} (${bestMockExam.cefrName})`
+                      : 'Complete a 4-section Full Mock Exam to record your official mock test score'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="px-3 py-1.5 bg-white/10 border border-white/15 rounded-lg text-right font-mono">
+                  <div className="text-sm font-extrabold text-white">
+                    {bestMockExam ? `Band ${bestMockExam.overallBand6.toFixed(1)} / 6.0` : '—'}
+                  </div>
+                  <div className="text-[11px] text-teal-200">
+                    {bestMockExam ? `${bestMockExam.totalScore120} / 120 Total` : 'No Mock Exams'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {examHistory.length === 0 ? (
+              <div className="h-28 flex flex-col items-center justify-center text-xs text-slate-400">
+                <Clock className="w-6 h-6 text-slate-300 mb-1" />
+                <span>No Full Mock Exams completed yet.</span>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-slate-400 font-semibold">
+                      <th className="pb-2">Date</th>
+                      <th className="pb-2">Mock Set Title</th>
+                      <th className="pb-2 text-center">Overall Band</th>
+                      <th className="pb-2 text-center">CEFR</th>
+                      <th className="pb-2 text-center">Total Scaled</th>
+                      <th className="pb-2 text-center">Reading</th>
+                      <th className="pb-2 text-center">Listening</th>
+                      <th className="pb-2 text-center">Writing</th>
+                      <th className="pb-2 text-center">Speaking</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {examHistory.map((exam) => (
+                      <tr key={exam.id} className="hover:bg-slate-50/60 transition-colors">
+                        <td className="py-2.5 text-slate-500 whitespace-nowrap font-mono">
+                          {new Date(exam.date || exam.completedAt).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}
+                        </td>
+                        <td className="py-2.5 font-semibold text-slate-900 max-w-xs truncate" title={exam.setTitle}>
+                          {exam.setTitle}
+                        </td>
+                        <td className="py-2.5 text-center font-mono font-bold text-teal-800 whitespace-nowrap">
+                          Band {Number(exam.overallBand6 || 1).toFixed(1)} / 6.0
+                        </td>
+                        <td className="py-2.5 text-center whitespace-nowrap">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
+                            {exam.cefrCode}
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-center font-mono font-extrabold text-slate-900 whitespace-nowrap">
+                          {exam.totalScore120} / 120
+                        </td>
+                        <td className="py-2.5 text-center font-mono text-slate-700 whitespace-nowrap">
+                          {exam.sectionScores?.Reading ?? 0} / 30
+                        </td>
+                        <td className="py-2.5 text-center font-mono text-slate-700 whitespace-nowrap">
+                          {exam.sectionScores?.Listening ?? 0} / 30
+                        </td>
+                        <td className="py-2.5 text-center font-mono text-slate-700 whitespace-nowrap">
+                          {exam.sectionScores?.Writing ?? 0} / 30
+                        </td>
+                        <td className="py-2.5 text-center font-mono text-slate-700 whitespace-nowrap">
+                          {exam.sectionScores?.Speaking ?? 0} / 30
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </div>

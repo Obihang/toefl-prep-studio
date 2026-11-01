@@ -670,6 +670,13 @@ export async function loadCuratedShard(
         if (!normalizedContent || !validateNormalizedTask(canonicalType, normalizedContent)) {
           continue;
         }
+        const isRowEdited = Boolean(
+          editedMap[qId] ||
+            row.isEdited ||
+            row.editedBy ||
+            row.content?.isEdited ||
+            row.content?.editedBy
+        );
         const enriched = {
           ...normalizedContent,
           id: qId || row.id,
@@ -679,10 +686,20 @@ export async function loadCuratedShard(
           difficulty: normalizeDifficultyLabel(rawSource.level || row.level || row.content.level),
           topic: normalizeTopicLabel(rawSource.topic || row.topic || row.content.topic, rawSource),
           schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+          ...(isRowEdited ? { isEdited: true, editedBy: row.content?.editedBy || 'Obi' } : {}),
         };
         const sig = getQuestionContentSignature(canonicalType, enriched);
         if (deletedSet.has(sig)) continue;
-        if (!seenSigs.has(sig) && (!qId || !seenIds.has(qId))) {
+        if (isRowEdited && qId && seenIds.has(qId)) {
+          const existingIdx = existingList.findIndex(
+            (item) => String(item.id || item._id || '') === qId
+          );
+          if (existingIdx !== -1) {
+            existingList[existingIdx] = enriched;
+            seenSigs.add(sig);
+          }
+          saveEditedQuestionLocal(qId, enriched);
+        } else if (!seenSigs.has(sig) && (!qId || !seenIds.has(qId))) {
           seenSigs.add(sig);
           if (qId) seenIds.add(qId);
           existingList.push(enriched);
@@ -980,6 +997,15 @@ export async function syncCuratedQuestionBank(
               contentToCheck
             );
 
+            const isDocEdited = Boolean(
+              editedMap[qId] ||
+                (innerId && editedMap[innerId]) ||
+                rawDoc.isEdited ||
+                rawDoc.editedBy ||
+                rawDoc.content?.isEdited ||
+                rawDoc.content?.editedBy
+            );
+
             const enrichedContent = {
               ...contentToCheck,
               id: contentToCheck.id || qId,
@@ -990,11 +1016,45 @@ export async function syncCuratedQuestionBank(
               difficulty: validLevel,
               topic: validTopic,
               schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+              ...(isDocEdited
+                ? {
+                    isEdited: true,
+                    editedBy: rawDoc.content?.editedBy || rawDoc.editedBy || 'Obi',
+                  }
+                : {}),
             };
 
             const sig = getQuestionContentSignature(targetTaskType, enrichedContent);
+            if (deletedSet.has(sig)) {
+              return;
+            }
+
+            if (isDocEdited && (seenIds.has(qId) || (innerId && seenIds.has(innerId)))) {
+              const matchId = seenIds.has(qId) ? qId : innerId;
+              const cacheIdx = tempCache[targetTaskType].findIndex(
+                (it) => String(it.id || it.questionDocId || '') === matchId
+              );
+              if (cacheIdx !== -1) {
+                tempCache[targetTaskType][cacheIdx] = enrichedContent;
+              }
+              const storeIdx = questionsToStore.findIndex(
+                (it) => String(it.id || it.content?.id || '') === matchId
+              );
+              if (storeIdx !== -1) {
+                questionsToStore[storeIdx] = {
+                  ...questionsToStore[storeIdx],
+                  level: validLevel,
+                  topic: validTopic,
+                  content: enrichedContent,
+                  updatedAt: Date.now(),
+                };
+              }
+              seenSignatures.add(sig);
+              saveEditedQuestionLocal(matchId, enrichedContent);
+              return;
+            }
+
             if (
-              deletedSet.has(sig) ||
               seenSignatures.has(sig) ||
               seenIds.has(qId) ||
               (innerId && seenIds.has(innerId))
@@ -1029,7 +1089,7 @@ export async function syncCuratedQuestionBank(
     console.warn(`Failed to sync questions from Firestore (${collectionName}) into local bank:`, firestoreErr);
   }
 
-  // 3. Preserve any locally generated AI questions in IndexedDB for this mode that match CURRENT_BANK_SCHEMA_VERSION
+  // 3. Preserve any locally generated AI questions or edited curated questions in IndexedDB for this mode
   const storeName = getIdbStoreName(mode);
   try {
     const dbInstance = await openIndexedDB();
@@ -1048,6 +1108,13 @@ export async function syncCuratedQuestionBank(
       const rawRowContent = row.content || row;
       const qId = String(row.id || rawRowContent.id || '');
       if (qId && deletedSet.has(qId)) continue;
+      const isRowEdited = Boolean(
+        editedMap[qId] ||
+          row.isEdited ||
+          row.editedBy ||
+          rawRowContent.isEdited ||
+          rawRowContent.editedBy
+      );
       const effectiveRaw = editedMap[qId] ? { ...rawRowContent, ...editedMap[qId] } : rawRowContent;
       const normalizedWrapper = normalizeQuestionBankItem(effectiveRaw, rowType);
       const rowContent = normalizedWrapper?.content || normalizedWrapper;
@@ -1069,10 +1136,37 @@ export async function syncCuratedQuestionBank(
           difficulty: validLevel,
           topic: validTopic,
           schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+          ...(isRowEdited
+            ? {
+                isEdited: true,
+                editedBy: rawRowContent.editedBy || row.editedBy || 'Obi',
+              }
+            : {}),
         };
         const sig = getQuestionContentSignature(rowType, enrichedContent);
         if (deletedSet.has(sig)) continue;
-        if (!seenSignatures.has(sig) && (!qId || !seenIds.has(qId))) {
+        if (isRowEdited && qId && seenIds.has(qId)) {
+          const cacheIdx = tempCache[rowType].findIndex(
+            (it) => String(it.id || it.questionDocId || '') === qId
+          );
+          if (cacheIdx !== -1) {
+            tempCache[rowType][cacheIdx] = enrichedContent;
+          }
+          const storeIdx = questionsToStore.findIndex(
+            (it) => String(it.id || it.content?.id || '') === qId
+          );
+          if (storeIdx !== -1) {
+            questionsToStore[storeIdx] = {
+              ...questionsToStore[storeIdx],
+              level: validLevel,
+              topic: validTopic,
+              content: enrichedContent,
+              updatedAt: row.updatedAt || Date.now(),
+            };
+          }
+          seenSignatures.add(sig);
+          saveEditedQuestionLocal(qId, enrichedContent);
+        } else if (!seenSignatures.has(sig) && (!qId || !seenIds.has(qId))) {
           seenSignatures.add(sig);
           if (qId) seenIds.add(qId);
           tempCache[rowType].push(enrichedContent);
@@ -2769,12 +2863,22 @@ export async function updateQuestionInBank(
   }
 
   const canonicalType = canonicalizeTaskType(updatedItem.taskType || foundType);
+  const preferBlanks =
+    canonicalType === 'complete-words' &&
+    updatedItem.text === existingItem?.text &&
+    Array.isArray(updatedItem.blanks) &&
+    JSON.stringify(updatedItem.blanks) !== JSON.stringify(existingItem?.blanks);
+
   const rawMerged = {
     ...(existingItem || {}),
     ...updatedItem,
     id: cleanId || existingItem?.id || `edited_${Date.now()}`,
     taskType: canonicalType,
     mode,
+    isEdited: true,
+    updatedAt: Date.now(),
+    editedBy: getScholarUsername() || 'Obi',
+    _preferBlanks: preferBlanks,
   };
 
   const validLevel: Level = normalizeDifficultyLabel(
@@ -2789,8 +2893,8 @@ export async function updateQuestionInBank(
   const normalizedBase = normalizedWrapper?.content || normalizedWrapper || rawMerged;
 
   const finalContent = {
-    ...normalizedBase,
     ...updatedItem,
+    ...normalizedBase,
     id: rawMerged.id,
     questionDocId: rawMerged.questionDocId || rawMerged.id,
     taskType: canonicalType,
@@ -2799,9 +2903,11 @@ export async function updateQuestionInBank(
     difficulty: validLevel,
     topic: validTopic,
     schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
+    isEdited: true,
     updatedAt: Date.now(),
     editedBy: getScholarUsername() || 'Obi',
   };
+  delete (finalContent as any)._preferBlanks;
 
   // Save in localStorage override map so static shard items retain edits across reloads
   saveEditedQuestionLocal(finalContent.id, finalContent);
@@ -2841,6 +2947,8 @@ export async function updateQuestionInBank(
         content: finalContent,
         contentHash,
         mode,
+        isEdited: true,
+        editedBy: finalContent.editedBy,
         schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
         updatedAt: Date.now(),
       });
@@ -2867,6 +2975,8 @@ export async function updateQuestionInBank(
           topic: validTopic,
           content: finalContent,
           contentHash,
+          isEdited: true,
+          editedBy: finalContent.editedBy,
           schemaVersion: CURRENT_BANK_SCHEMA_VERSION,
           updatedAt: serverTimestamp(),
           createdBy: finalContent.createdBy || auth?.currentUser?.uid || 'Obi',

@@ -62,9 +62,11 @@ import {
   markQuestionCompleted,
   isQuestionCompleted,
   getPracticeHistory,
+  savePracticeRecord,
   clearAllUserProgress,
   PracticeRecord,
 } from './utils/scoreTracker';
+import { clearExamHistory } from './utils/examStorage';
 import { getMistakesList, clearAllMistakes, MistakeRecord } from './utils/mistakesTracker';
 import { clearAllFirestoreMistakes } from './utils/mistakes';
 import { SystemStatusModal } from './components/shared/SystemStatusModal';
@@ -141,7 +143,7 @@ import {
 import { markUserAiRequest, getLastUserAiRequestTime } from './utils/userActivity';
 
 const DashboardModal = lazy(() => import('./components/modals/DashboardModal').then(m => ({ default: m.DashboardModal })));
-const PerformanceHistoryModal = lazy(() => import('./components/modals/PerformanceHistoryModal').then(m => ({ default: m.PerformanceHistoryModal })));
+const PerformanceHistoryModal = lazy(() => import('./components/modals/ScoreHistoryModal').then(m => ({ default: m.ScoreHistoryModal })));
 const MockTestView = lazy(() => import('./components/ExamEngine').then(m => ({ default: m.ExamEngine })));
 
 export default function App() {
@@ -181,7 +183,11 @@ export default function App() {
   const [tierNotice, setTierNotice] = useState<string | null>(null);
 
   // Stop all playing audio whenever the user switches task types or enters/exits mock test mode
+  // Also sync `toefl_in_mock_test` in localStorage so Full Mock Test attempts never enter single-task `scoreHistory`
   useEffect(() => {
+    try {
+      localStorage.setItem('toefl_in_mock_test', isMockTest ? 'true' : 'false');
+    } catch {}
     stopSpeaking();
     return () => {
       stopSpeaking();
@@ -199,6 +205,16 @@ export default function App() {
     getMistakesList()
   );
   const [taskResetNonce, setTaskResetNonce] = useState(0);
+
+  const saveScoreEntry = React.useCallback(
+    async (entry: Omit<PracticeRecord, 'id' | 'date'>) => {
+      if (practiceMode === 'coach') return;
+      if (isMockTest) return;
+      await savePracticeRecord(entry, practiceMode);
+      setScoreHistory(getPracticeHistory());
+    },
+    [practiceMode, isMockTest]
+  );
 
   useEffect(() => {
     const syncCompleted = () => {
@@ -243,6 +259,7 @@ export default function App() {
     localStorage.removeItem('toefl_exam_history');
     localStorage.removeItem('toefl_adaptive_difficulty');
     localStorage.removeItem('toefl_difficulty_history');
+    clearExamHistory();
     clearAllUserProgress();
     setCompletedQuestionIds([]);
 
@@ -2261,8 +2278,9 @@ export default function App() {
             ...prev,
             [targetType]: normalizeTaskData(updated, targetType),
           }));
+          setTaskResetNonce((n) => n + 1);
           getQuestionBankStats(practiceMode).then(setBankStats).catch(() => {});
-          setSharedBankNotice('💾 Question changes saved to IndexedDB & Firestore!');
+          setSharedBankNotice('Question changes saved to IndexedDB & Firestore!');
           setTimeout(() => setSharedBankNotice(null), 3500);
         }}
         onDeleted={() => {

@@ -24,7 +24,7 @@ import {
 import { getVocabularyWords, saveVocabularyWord as saveVocabRemote, deleteVocabularyWord as deleteVocabRemote, VocabularyWord } from '../../utils/vocabulary';
 import { getVocabularyList, saveVocabularyWord as saveVocabLocal, removeVocabularyWord as removeVocabLocal } from '../../utils/vocabularyStore';
 import { getQuestionCountsPerTaskType, isDevAdminUnlocked } from '../../utils/questionBankStorage';
-import { getMockExamSetsCount } from '../../utils/examStorage';
+import { getMockExamSetsCount, getExamHistory, clearExamHistory, FullMockExamResult } from '../../utils/examStorage';
 
 export type DashboardTabType = 'dashboard' | 'goals' | 'settings' | 'vocabulary' | 'mistakes' | 'dev';
 
@@ -55,6 +55,7 @@ export const DashboardModal: React.FC<Props> = ({
   const [isDevAdmin, setIsDevAdmin] = useState<boolean>(() => isDevAdminUnlocked());
   const [stats, setStats] = useState<any>(null);
   const [practiceHistory, setPracticeHistory] = useState<any[]>(() => getPracticeHistory());
+  const [examHistory, setExamHistory] = useState<FullMockExamResult[]>(() => getExamHistory());
   const [completedDays, setCompletedDays] = useState<string[]>([]);
   const [vocab, setVocab] = useState<VocabularyWord[]>([]);
 
@@ -140,6 +141,7 @@ export const DashboardModal: React.FC<Props> = ({
     const loadUserData = () => {
       if (isOpen) {
         setPracticeHistory(getPracticeHistory());
+        setExamHistory(getExamHistory());
         setStats(getUserStats());
         getCompletedDays().then(setCompletedDays).catch(() => setCompletedDays([]));
         
@@ -195,10 +197,12 @@ export const DashboardModal: React.FC<Props> = ({
     window.addEventListener('toefl_user_changed', loadUserData);
     window.addEventListener('toefl_vocab_updated', loadUserData);
     window.addEventListener('toefl_progress_reset', loadUserData);
+    window.addEventListener('toefl_exam_history_updated', loadUserData);
     return () => {
       window.removeEventListener('toefl_user_changed', loadUserData);
       window.removeEventListener('toefl_vocab_updated', loadUserData);
       window.removeEventListener('toefl_progress_reset', loadUserData);
+      window.removeEventListener('toefl_exam_history_updated', loadUserData);
     };
   }, [isOpen]);
 
@@ -361,6 +365,7 @@ export const DashboardModal: React.FC<Props> = ({
               toeflEstimate={toeflEstimate}
               stats={stats}
               history={practiceHistory}
+              examHistory={examHistory}
               completedDays={completedDays}
               vocab={vocab}
               onOpenTask={(target) => {
@@ -370,8 +375,10 @@ export const DashboardModal: React.FC<Props> = ({
               onOpenHistory={openHistory}
               onSwitchTab={(tab) => setActiveTab(tab)}
               onResetProgress={() => {
+                clearExamHistory();
                 onResetProgress?.();
                 setPracticeHistory([]);
+                setExamHistory([]);
                 setStats(null);
                 setCompletedDays([]);
               }}

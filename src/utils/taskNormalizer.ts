@@ -342,9 +342,9 @@ export function normalizeTopicLabel(rawTopic?: any, fallbackContent?: any): Acad
 }
 
 /**
- * Repairs corrupted bracket tokens where overlapping prefixes/suffixes collided.
- * E.g. "biodegr[gradable]" -> "biodegradable"
- *      "quant[umntum]" -> "quantum"
+ * Repairs corrupted bracket tokens where overlapping prefixes/suffixes collided
+ * without stripping valid English double letters (like 'ss' in pressure or 'oo' in microorganisms)
+ * or valid repeated syllables (like 'inin' in sustaining).
  */
 function repairBracketToken(prefix: string, answer: string): string {
   const pLower = prefix.toLowerCase();
@@ -360,40 +360,151 @@ function repairBracketToken(prefix: string, answer: string): string {
     return 'biodegradable';
   }
 
-  // Seam overlap where prefix ends with the start of answer
-  // e.g. prefix="biodegr", answer="gradable" -> overlap="gr"
-  for (let len = Math.min(prefix.length, answer.length); len >= 1; len--) {
-    if (pLower.slice(-len) === aLower.slice(0, len)) {
-      return prefix + answer.slice(len);
-    }
+  return prefix + answer;
+}
+
+/**
+ * Heals words that may have been damaged by legacy seam stripping in cached IndexedDB/Firestore records.
+ */
+export function healCorruptedCTestWords(input: string): string {
+  return input
+    .replace(/\bbiodegr\[+gradable\]+/gi, 'biodeg[radable]')
+    .replace(/\bquant\[+umntum\]+/gi, 'qua[ntum]')
+    .replace(/\bmicror\[+ganisms\]+/gi, 'microor[ganisms]')
+    .replace(/\bmicro\[+organisms\]+/gi, 'microor[ganisms]')
+    .replace(/\bmicrorganisms\b/gi, 'microorganisms')
+    .replace(/\bself-sustaing\b/gi, 'self-su[staining]')
+    .replace(/\bself-su\[+staing\]+/gi, 'self-su[staining]')
+    .replace(/\bpre\[+sure\]+/gi, 'pre[ssure]')
+    .replace(/\bhydrostatic\s+pres\[+sure\]+/gi, 'hydrostatic pre[ssure]')
+    .replace(/\bpresure\b/gi, 'pressure')
+    .replace(/\bsustaing\b/gi, 'sustaining')
+    .replace(/\bmaintaing\b/gi, 'maintaining')
+    .replace(/\bremaing\b/gi, 'remaining')
+    .replace(/\bcontaing\b/gi, 'containing')
+    .replace(/\bobtaing\b/gi, 'obtaining')
+    .replace(/\bexplaing\b/gi, 'explaining')
+    .replace(/\bcomunities\b/gi, 'communities')
+    .replace(/\bcomunity\b/gi, 'community')
+    .replace(/\bsuport\b/gi, 'support')
+    .replace(/\bcurent\b/gi, 'current')
+    .replace(/\bpasage\b/gi, 'passage')
+    .replace(/\bpatern\b/gi, 'pattern')
+    .replace(/\bmilion\b/gi, 'million')
+    .replace(/\bchanel\b/gi, 'channel')
+    .replace(/\bcorect\b/gi, 'correct')
+    .replace(/\bsugest\b/gi, 'suggest')
+    .replace(/\bacount\b/gi, 'account')
+    .replace(/\bcomand\b/gi, 'command')
+    .replace(/\bcoment\b/gi, 'comment')
+    .replace(/\bconect\b/gi, 'connect')
+    .replace(/\bcolect\b/gi, 'collect')
+    .replace(/\bcolege\b/gi, 'college')
+    .replace(/\btrafic\b/gi, 'traffic')
+    .replace(/\bfosil\b/gi, 'fossil')
+    .replace(/\bmasive\b/gi, 'massive')
+    .replace(/\bpasive\b/gi, 'passive')
+    .replace(/\bsesion\b/gi, 'session')
+    .replace(/\bmision\b/gi, 'mission')
+    .replace(/\btisue\b/gi, 'tissue')
+    .replace(/\bpolution\b/gi, 'pollution')
+    .replace(/\bcolusion\b/gi, 'collusion')
+    .replace(/\bsurounding\b/gi, 'surrounding')
+    .replace(/\bacces\b/gi, 'access')
+    .replace(/\bprocesing\b/gi, 'processing')
+    .replace(/\bnecesary\b/gi, 'necessary')
+    .replace(/\bposible\b/gi, 'possible')
+    .replace(/\bprofesor\b/gi, 'professor')
+    .replace(/\bquanties\b/gi, 'quantities')
+    .replace(/\bsupercondcut\b/gi, 'superconducting')
+    .replace(/\bsuperconduct\b/gi, 'superconducting');
+}
+
+/**
+ * Extracts the ordered NormalizedBlankItem[] directly from `prefix[answer]` tokens in bracketed text.
+ */
+export function extractBlanksFromBracketedText(text: string): NormalizedBlankItem[] {
+  const blanks: NormalizedBlankItem[] = [];
+  const regex = /([a-zA-Z'\u2019-]*)\[+([^\]]+)\]+/g;
+  let match: RegExpExecArray | null;
+  let idx = 0;
+  while ((match = regex.exec(text)) !== null) {
+    const prefix = match[1] || '';
+    const answer = match[2] || '';
+    if (!prefix || !answer) continue;
+    const fullWord = `${prefix}${answer}`;
+    blanks.push({
+      id: `blank-${idx + 1}`,
+      index: idx,
+      word: fullWord,
+      prefix,
+      answer,
+      fullWord,
+    });
+    idx++;
+  }
+  return blanks;
+}
+
+/**
+ * Synchronizes bracketed `text` and `blanks` array so they never disagree.
+ * - When `preferBlanks` is true (e.g. user edited `blanks` in JSON), updates `prefix[answer]` tokens in `text`
+ *   to match `blanks[i].prefix` and `blanks[i].answer` (automatically adjusting prefix if only answer was changed on the same word, or vice versa).
+ * - Otherwise, recomputes `blanks` directly from the `prefix[answer]` tokens in `text`.
+ */
+export function syncBracketedTextWithBlanks(
+  rawTextInput: string,
+  rawBlanks?: any[],
+  preferBlanks: boolean = false
+): { text: string; blanks: NormalizedBlankItem[] } {
+  let text = healCorruptedCTestWords(String(rawTextInput || '').trim());
+
+  if (preferBlanks && Array.isArray(rawBlanks) && rawBlanks.length > 0) {
+    let matchIdx = 0;
+    text = text.replace(/([a-zA-Z'\u2019-]*)\[+([^\]]+)\]+/g, (fullMatch, oldPrefix, oldAnswer) => {
+      const b = rawBlanks[matchIdx++];
+      if (!b || typeof b !== 'object') return fullMatch;
+      const oldFull = `${oldPrefix}${oldAnswer}`;
+      let nextPrefix = typeof b.prefix === 'string' ? b.prefix : oldPrefix;
+      let nextAnswer =
+        typeof b.answer === 'string'
+          ? b.answer
+          : typeof b.solution === 'string'
+          ? b.solution
+          : oldAnswer;
+
+      // If user edited only `answer` (e.g. changed "sure" -> "ssure" on "pressure"), adjust `prefix` automatically
+      if (
+        nextAnswer !== oldAnswer &&
+        nextPrefix === oldPrefix &&
+        oldFull.toLowerCase().endsWith(nextAnswer.toLowerCase()) &&
+        nextAnswer.length < oldFull.length
+      ) {
+        nextPrefix = oldFull.slice(0, oldFull.length - nextAnswer.length);
+      } else if (
+        nextPrefix !== oldPrefix &&
+        nextAnswer === oldAnswer &&
+        oldFull.toLowerCase().startsWith(nextPrefix.toLowerCase()) &&
+        nextPrefix.length < oldFull.length
+      ) {
+        nextAnswer = oldFull.slice(nextPrefix.length);
+      }
+
+      if (nextPrefix.length >= 1 && nextAnswer.length >= 1) {
+        return `${nextPrefix}[${nextAnswer}]`;
+      }
+      return fullMatch;
+    });
   }
 
-  // Check if answer contains a duplicated repeat of suffix or internal syllable
-  const combined = prefix + answer;
-  const deduped = combined.replace(/([a-zA-Z]{2,6})\1+/gi, '$1');
-  if (deduped.length >= prefix.length && deduped !== combined) {
-    return deduped;
-  }
-
-  return combined;
+  const blanks = extractBlanksFromBracketedText(text);
+  return { text, blanks };
 }
 
 /**
  * Deterministically normalizes any "Complete the Words" (C-Test) task according to
- * official ETS 2026 TOEFL iBT C-Test specifications:
- * 1. Repairs any overlapping duplicate letters from bracketed tokens (e.g. biodegr[gradable] -> biodegradable,
- *    quant[umntum] -> quantum).
- * 2. Strips all brackets to obtain the 100% clean plain-English paragraph.
- * 3. Keeps Sentence 1 100% intact with zero blanks.
- * 4. In Sentence 2+, selects every 2nd eligible word (alternating: skip 1, blank 1, skip 1, blank 1...)
- *    until exactly 10 words are blanked.
- *    - An eligible word is a pure alphabetic English word (/^[a-zA-Z]+$/) of length >= 2 that is
- *      not a capitalized proper noun mid-sentence, not "I" or "a", and not an acronym.
- *    - For each selected word W of length L: prefixLen = Math.floor(L / 2),
- *      prefix = W.slice(0, prefixLen), answer = W.slice(prefixLen).
- *      Formatted as `${prefix}[${answer}]`.
- * 5. Derives the blanks array exclusively from those 10 generated blank tokens in text.
- * 6. 100% idempotent: running 1 time or 100 times produces identical output.
+ * official ETS 2026 TOEFL iBT C-Test specifications while preserving valid custom/edited
+ * `prefix[answer]` splits so `text` and `blanks` are 100% synchronized.
  */
 export function normalizeCompleteWordsTask(raw: any): {
   title: string;
@@ -420,17 +531,84 @@ export function normalizeCompleteWordsTask(raw: any): {
   const minBlanks = isCoach ? 20 : 10;
   const maxBlanks = isCoach ? 25 : 10;
 
+  // Step 0: Heal any corrupted words and synchronize with raw.blanks if raw._preferBlanks is set
+  const synced = syncBracketedTextWithBlanks(
+    rawText,
+    raw?.blanks,
+    Boolean(raw?._preferBlanks)
+  );
+  rawText = synced.text;
+  const existingBlanks = synced.blanks;
+
+  // Check if Sentence 1 has 0 blanks and existing brackets are already valid
+  let initialS1EndIdx = -1;
+  const initialTermRegex = /([.!?])\s+/g;
+  let initialTermMatch: RegExpExecArray | null;
+  while ((initialTermMatch = initialTermRegex.exec(rawText)) !== null) {
+    const before = rawText.slice(0, initialTermMatch.index + 1);
+    const lastWord = (before.match(/[a-zA-Z0-9.'’]+$/) || [''])[0].toLowerCase();
+    if (!SENTENCE_ABBREVIATIONS.has(lastWord)) {
+      initialS1EndIdx = initialTermMatch.index + 1;
+      break;
+    }
+  }
+  const s1HasBlanks = initialS1EndIdx !== -1 && /[\[\]]/.test(rawText.slice(0, initialS1EndIdx));
+  const isExplicitlyEdited = Boolean(raw?.isEdited || raw?.editedBy || raw?.updatedAt);
+
+  if (
+    !s1HasBlanks &&
+    existingBlanks.length > 0 &&
+    (isExplicitlyEdited ||
+      (existingBlanks.length >= minBlanks && existingBlanks.length <= maxBlanks))
+  ) {
+    const cleanText = rawText.replace(/\s+/g, ' ').trim();
+    const finalBlanks = extractBlanksFromBracketedText(cleanText);
+    return {
+      title,
+      text: cleanText,
+      totalBlanks: finalBlanks.length,
+      blanks: finalBlanks,
+      ...(raw?.explanation ? { explanation: String(raw.explanation) } : {}),
+    };
+  }
+
+  // Record custom splits from existing brackets and raw.blanks before stripping brackets
+  const customSplitsByWord = new Map<string, { prefix: string; answer: string }>([
+    ['pressure', { prefix: 'pre', answer: 'ssure' }],
+    ['microorganisms', { prefix: 'microor', answer: 'ganisms' }],
+    ['self-sustaining', { prefix: 'self-su', answer: 'staining' }],
+  ]);
+  for (const b of existingBlanks) {
+    if (b.prefix && b.answer && b.fullWord) {
+      customSplitsByWord.set(b.fullWord.toLowerCase(), {
+        prefix: b.prefix,
+        answer: b.answer,
+      });
+    }
+  }
+  if (Array.isArray(raw?.blanks)) {
+    for (const b of raw.blanks) {
+      if (b?.prefix && b?.answer) {
+        const fw = String(b.fullWord || b.word || `${b.prefix}${b.answer}`);
+        if (b.prefix.length + b.answer.length === fw.length) {
+          customSplitsByWord.set(fw.toLowerCase(), {
+            prefix: String(b.prefix),
+            answer: String(b.answer),
+          });
+        }
+      }
+    }
+  }
+
   // Step 1: Repair any corrupted bracket tokens and strip brackets to produce cleanParagraph
-  rawText = rawText.replace(/([a-zA-Z]+)\[+([a-zA-Z]+)\]+/g, (_, p, a) => repairBracketToken(p, a));
-  rawText = rawText.replace(/\[+([a-zA-Z]+)\]+([a-zA-Z]+)/g, '$1$2');
+  rawText = rawText.replace(/([a-zA-Z'\u2019-]+)\[+([a-zA-Z'\u2019-]+)\]+/g, (_, p, a) =>
+    repairBracketToken(p, a)
+  );
+  rawText = rawText.replace(/\[+([a-zA-Z'\u2019-]+)\]+([a-zA-Z'\u2019-]+)/g, '$1$2');
   rawText = rawText.replace(/\[+([^\]]+)\]+/g, '$1');
   rawText = rawText.replace(/[\[\]]+/g, '');
 
-  let cleanParagraph = rawText.replace(/\s+/g, ' ').trim();
-  cleanParagraph = cleanParagraph
-    .replace(/\bquanties\b/gi, 'quantities')
-    .replace(/\bsupercondcut\b/gi, 'superconducting')
-    .replace(/\bsuperconduct\b/gi, 'superconducting');
+  const cleanParagraph = healCorruptedCTestWords(rawText.replace(/\s+/g, ' ').trim());
 
   // Step 2: Keep Sentence 1 100% intact (up to first terminal punctuation followed by space)
   let s1EndIdx = -1;
@@ -457,7 +635,7 @@ export function normalizeCompleteWordsTask(raw: any): {
     sentenceRest = words.slice(splitAt).join(' ');
   }
 
-  // Step 3: Tokenize sentenceRest and analyze eligible words
+  // Step 3: Tokenize sentenceRest and analyze eligible words (including hyphenated compounds like self-sustaining)
   const tokens = sentenceRest.split(/(\s+)/);
 
   interface WordTokenInfo {
@@ -475,15 +653,15 @@ export function normalizeCompleteWordsTask(raw: any): {
     const tok = tokens[i];
     if (/^\s+$/.test(tok) || tok === '') continue;
 
-    const m = tok.match(/^([^a-zA-Z]*)([a-zA-Z]+)([^a-zA-Z]*)$/);
+    const m = tok.match(/^([^a-zA-Z]*)([a-zA-Z]+(?:-[a-zA-Z]+)?)([^a-zA-Z]*)$/);
     if (!m) continue;
 
     const [, lead, word, trail] = m;
-    const isAlpha = /^[a-zA-Z]+$/.test(word);
+    const isAlphaOrHyphen = /^[a-zA-Z]+(?:-[a-zA-Z]+)?$/.test(word);
     const isAcronym = word.length >= 2 && word === word.toUpperCase();
     const isCapitalized = /^[A-Z]/.test(word);
     const isProperNounMidSentence = isCapitalized && !isAtSentenceStart;
-    const isEligible = isAlpha && word.length >= 2 && !isAcronym && !isProperNounMidSentence;
+    const isEligible = isAlphaOrHyphen && word.length >= 2 && !isAcronym && !isProperNounMidSentence;
 
     wordInfos.push({
       tokenIndex: i,
@@ -538,9 +716,17 @@ export function normalizeCompleteWordsTask(raw: any): {
     if (!wi) return tok;
 
     const fullWord = wi.word;
-    const prefixLen = Math.floor(fullWord.length / 2);
-    const prefix = fullWord.slice(0, prefixLen);
-    const answer = fullWord.slice(prefixLen);
+    const custom = customSplitsByWord.get(fullWord.toLowerCase());
+    let prefix = '';
+    let answer = '';
+    if (custom && custom.prefix.length >= 1 && custom.answer.length >= 1 && custom.prefix.length + custom.answer.length === fullWord.length) {
+      prefix = fullWord.slice(0, custom.prefix.length);
+      answer = fullWord.slice(custom.prefix.length);
+    } else {
+      const prefixLen = Math.floor(fullWord.length / 2);
+      prefix = fullWord.slice(0, prefixLen);
+      answer = fullWord.slice(prefixLen);
+    }
 
     blanks.push({
       id: `blank-${blankCounter + 1}`,
@@ -2299,9 +2485,9 @@ export function validateNormalizedTask(taskTypeOrItem: string | any, normalizedD
       for (let i = 1; i < parts.length; i += 2) {
         const solution = parts[i];
         const prevText = parts[i - 1] || '';
-        const prefixMatch = prevText.match(/([a-zA-Z]+)$/);
+        const prefixMatch = prevText.match(/([a-zA-Z'\u2019-]+)$/);
         if (!prefixMatch || prefixMatch[1].length < 1) return false;
-        if (!/^[a-zA-Z]+$/.test(solution)) return false;
+        if (!/^[a-zA-Z'\u2019-]+$/.test(solution)) return false;
       }
       return true;
     }

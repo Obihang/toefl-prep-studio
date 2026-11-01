@@ -69,7 +69,7 @@ export const GlobalReportButton: React.FC = () => {
         title="Report an Issue or Feedback"
       >
         <MessageSquareWarning className="w-3.5 h-3.5 text-teal-700" />
-        <span>💬 Feedback / Report</span>
+        <span>Feedback / Report</span>
       </button>
 
       {isOpen && (
