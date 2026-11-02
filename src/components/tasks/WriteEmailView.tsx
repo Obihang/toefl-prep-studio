@@ -259,11 +259,11 @@ export const WriteEmailView: React.FC<Props> = ({
     if (evalData) {
       setEvalResult(evalData);
 
-      if (evalData.corrections && auth.currentUser) {
+      if (evalData.corrections) {
         for (const correction of evalData.corrections) {
           await saveMistake(
-            task.id,
-            'write-email',
+            `${task.title || task.id} (Email Writing)`,
+            'Write an Email',
             correction.original,
             correction.corrected,
             correction.explanation

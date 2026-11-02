@@ -23,6 +23,7 @@ import {
 import { filterWhisperHallucinations, detectFillerWords } from '../../utils/audio/fluencyMetrics';
 import { calculateSpeakingMetrics, SpeakingMetrics } from '../../utils/speakingMetrics';
 import { savePracticeRecord } from '../../utils/scoreTracker';
+import { saveMistake } from '../../utils/mistakes';
 import { getApiHeaders, hasAnyStoredApiKey } from '../../utils/apiKey';
 import { safeFetchJson } from '../../utils/apiHelper';
 import { evaluateLocally, mergeAiAndLocalEvaluation } from '../../utils/localEvaluator';
@@ -472,6 +473,20 @@ export const SpeakingInterviewView: React.FC<Props> = ({
 
     if (evalData) {
       setEvaluationResult({ ...evalData, submissionData });
+
+      if (Array.isArray(evalData.corrections)) {
+        for (const correction of evalData.corrections) {
+          if (correction?.original && correction?.corrected) {
+            await saveMistake(
+              `${task.title} (Speaking Interview)`,
+              'Take an Interview',
+              correction.original,
+              correction.corrected,
+              correction.explanation || 'Speaking grammar & lexical refinement'
+            );
+          }
+        }
+      }
 
       const scaled = evalData.scaledScore || 24;
       const band6 =

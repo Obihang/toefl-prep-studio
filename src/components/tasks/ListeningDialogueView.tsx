@@ -682,19 +682,17 @@ export const ListeningDialogueView: React.FC<Props> = ({
     const total = task.questions.length;
     const scaledScore = convertToScaledScore(correctCount, total);
 
-    if (auth.currentUser) {
-      task.questions.forEach((q, i) => {
-        if (selectedAnswers[i] !== q.answer) {
-          saveMistake(
-            task.title,
-            'listening-dialogue',
-            q.options[selectedAnswers[i]] ?? 'No answer',
-            q.options[q.answer],
-            q.why
-          );
-        }
-      });
-    }
+    task.questions.forEach((q, i) => {
+      if (selectedAnswers[i] !== q.answer) {
+        saveMistake(
+          `${task.title} — ${q.q}`,
+          'Listening Conversation',
+          q.options[selectedAnswers[i]] ?? 'No answer',
+          q.options[q.answer],
+          q.why
+        );
+      }
+    });
 
     savePracticeRecord({
       taskType: 'listening-dialogue',
@@ -1013,12 +1011,22 @@ export const ListeningDialogueView: React.FC<Props> = ({
                     {userChoice !== undefined && (
                       <button
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
+                          const nextChecked = !checkedQuestions[qIdx];
                           setCheckedQuestions((prev) => ({
                             ...prev,
-                            [qIdx]: !prev[qIdx],
-                          }))
-                        }
+                            [qIdx]: nextChecked,
+                          }));
+                          if (nextChecked && userChoice !== q.answer) {
+                            saveMistake(
+                              `${task.title} — ${q.q}`,
+                              'Listening Conversation',
+                              q.options[userChoice] ?? 'No answer',
+                              q.options[q.answer],
+                              q.why
+                            );
+                          }
+                        }}
                         className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-md transition-colors cursor-pointer"
                       >
                         {checkedQuestions[qIdx] ? 'Hide Check' : '✓ Check Question'}

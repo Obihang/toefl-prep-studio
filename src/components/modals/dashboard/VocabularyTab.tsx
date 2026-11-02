@@ -15,6 +15,7 @@ import {
   List,
 } from 'lucide-react';
 import { VocabularyWord } from '../../../utils/vocabulary';
+import { saveVocabularyWord as saveVocabLocal } from '../../../utils/vocabularyStore';
 import { getDefinition } from '../../../utils/dictionaryService';
 import { playSpeech } from '../../../utils/audioSpeech';
 import { OfflineDictionarySection } from './settings/OfflineDictionarySection';
@@ -41,7 +42,8 @@ export const VocabularyTab: React.FC<VocabularyTabProps> = ({
   const [isAutoDefining, setIsAutoDefining] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'flashcards'>('list');
   const [searchTerm, setSearchTerm] = useState('');
-  
+  const enrichedWordsRef = React.useRef<Set<string>>(new Set());
+
   // Flashcard state
   const [deck, setDeck] = useState<VocabularyWord[]>(vocab);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -56,6 +58,59 @@ export const VocabularyTab: React.FC<VocabularyTabProps> = ({
     }
   }, [vocab]);
 
+  // Automatically enrich any previously saved word that lacks multi-meanings
+  useEffect(() => {
+    let cancelled = false;
+    const toEnrich = vocab.filter(
+      (v) =>
+        v.word &&
+        (!Array.isArray(v.meanings) || v.meanings.length === 0) &&
+        !enrichedWordsRef.current.has(v.word.toLowerCase())
+    );
+    if (toEnrich.length === 0) return;
+
+    (async () => {
+      for (const item of toEnrich) {
+        if (cancelled) break;
+        const key = item.word.toLowerCase();
+        enrichedWordsRef.current.add(key);
+        try {
+          const result = await getDefinition(item.word);
+          if (cancelled || !result) continue;
+          const meaningsList = Array.isArray(result.meanings)
+            ? result.meanings
+                .filter((m: any) => m && m.definition)
+                .map((m: any) => ({
+                  partOfSpeech: m.partOfSpeech || 'word',
+                  definition: m.definition || '',
+                  example: m.example || undefined,
+                }))
+            : [];
+          if (meaningsList.length > 0) {
+            saveVocabLocal(
+              item.word,
+              undefined,
+              meaningsList[0].definition || item.definition,
+              item.taskType || 'Practice',
+              {
+                phonetic: result.phonetic || item.phonetic || '',
+                partOfSpeech: meaningsList[0].partOfSpeech || item.partOfSpeech || '',
+                meanings: meaningsList,
+                synonyms: Array.isArray(result.synonyms) ? result.synonyms : item.synonyms || [],
+              }
+            );
+          }
+        } catch {
+          // ignore
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [vocab]);
+
   const handleAutoDefine = async () => {
     if (!newWord.trim()) return;
     setIsAutoDefining(true);
@@ -63,8 +118,7 @@ export const VocabularyTab: React.FC<VocabularyTabProps> = ({
       const result = await getDefinition(newWord.trim());
       if (result && result.meanings && result.meanings.length > 0) {
         const primary = result.meanings[0];
-        const pos = primary.partOfSpeech ? `(${primary.partOfSpeech}) ` : '';
-        const def = `${pos}${primary.definition || ''}`;
+        const def = primary.definition || '';
         setNewDef(def);
       }
     } catch {
@@ -119,9 +173,17 @@ export const VocabularyTab: React.FC<VocabularyTabProps> = ({
   const filteredVocab = vocab.filter((v) => {
     const q = searchTerm.toLowerCase().trim();
     if (!q) return true;
+    const inMeanings =
+      Array.isArray(v.meanings) &&
+      v.meanings.some(
+        (m) =>
+          (m.definition && m.definition.toLowerCase().includes(q)) ||
+          (m.partOfSpeech && m.partOfSpeech.toLowerCase().includes(q))
+      );
     return (
       v.word.toLowerCase().includes(q) ||
       (v.definition && v.definition.toLowerCase().includes(q)) ||
+      inMeanings ||
       (v.context && v.context.toLowerCase().includes(q))
     );
   });
@@ -337,23 +399,48 @@ export const VocabularyTab: React.FC<VocabularyTabProps> = ({
                           <h3 className="text-xl sm:text-2xl font-bold text-white">
                             {currentCard.word}
                           </h3>
-                          {currentCard.partOfSpeech && (
+                          {currentCard.partOfSpeech && (!currentCard.meanings || currentCard.meanings.length === 0) && (
                             <span className="text-[10px] font-bold uppercase px-2 py-0.5 bg-teal-600 text-white rounded-full">
                               {currentCard.partOfSpeech}
                             </span>
                           )}
                         </div>
 
-                        <div className="bg-teal-950/40 border border-teal-700/40 rounded-xl p-4 max-w-lg mx-auto">
-                          <p className="text-sm sm:text-base font-medium text-teal-50 leading-relaxed">
-                            {currentCard.definition || 'No definition recorded.'}
-                          </p>
-                        </div>
+                        {currentCard.meanings && currentCard.meanings.length > 0 ? (
+                          <div className="space-y-2 max-w-lg mx-auto text-left">
+                            {currentCard.meanings.slice(0, 4).map((m, idx) => (
+                              <div
+                                key={idx}
+                                className="bg-teal-950/40 border border-teal-700/40 rounded-xl p-3 space-y-1"
+                              >
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 bg-teal-600/80 text-white rounded">
+                                    {m.partOfSpeech || 'word'}
+                                  </span>
+                                  <span className="text-xs sm:text-sm font-medium text-teal-50 leading-snug">
+                                    {m.definition}
+                                  </span>
+                                </div>
+                                {m.example && (
+                                  <p className="text-[11px] text-teal-200/80 italic pl-1">
+                                    "{m.example}"
+                                  </p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="bg-teal-950/40 border border-teal-700/40 rounded-xl p-4 max-w-lg mx-auto">
+                            <p className="text-sm sm:text-base font-medium text-teal-50 leading-relaxed">
+                              {currentCard.definition || 'No definition recorded.'}
+                            </p>
+                          </div>
+                        )}
 
                         {currentCard.synonyms && currentCard.synonyms.length > 0 && (
                           <div className="max-w-md mx-auto">
                             <p className="text-xs text-teal-200/90">
-                              <strong>Synonyms:</strong> {currentCard.synonyms.slice(0, 4).join(', ')}
+                              <strong>Synonyms:</strong> {currentCard.synonyms.slice(0, 5).join(', ')}
                             </p>
                           </div>
                         )}
@@ -437,36 +524,68 @@ export const VocabularyTab: React.FC<VocabularyTabProps> = ({
                 {filteredVocab.map((v) => (
                   <div
                     key={v.id}
-                    className="p-3.5 hover:bg-slate-50/80 transition-colors flex items-start justify-between gap-3 group"
+                    className="p-4 hover:bg-slate-50/60 transition-colors flex items-start justify-between gap-3 group"
                   >
-                    <div className="flex-1 space-y-1">
+                    <div className="flex-1 space-y-2">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-sm text-slate-900">{v.word}</span>
+                        <span className="font-bold text-sm text-slate-900 capitalize">{v.word}</span>
                         {v.phonetic && (
                           <span className="text-xs font-mono text-slate-400">
                             /{v.phonetic.replace(/\//g, '')}/
-                          </span>
-                        )}
-                        {v.partOfSpeech && (
-                          <span className="text-[10px] font-semibold uppercase px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">
-                            {v.partOfSpeech}
                           </span>
                         )}
                         <button
                           type="button"
                           onClick={() => handlePronounce(v.word)}
                           title="Listen to pronunciation"
-                          className="text-slate-400 hover:text-teal-700 p-0.5 rounded cursor-pointer"
+                          className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 rounded transition-colors cursor-pointer"
                         >
-                          <Volume2 className="w-3.5 h-3.5" />
+                          <Volume2 className="w-3.5 h-3.5 text-teal-700" />
+                          <span>Pronounce</span>
                         </button>
                       </div>
 
-                      <p className="text-xs text-slate-700 leading-relaxed">{v.definition}</p>
+                      {v.meanings && v.meanings.length > 0 ? (
+                        <div className="space-y-1.5">
+                          {v.meanings.map((m, idx) => (
+                            <div
+                              key={idx}
+                              className="text-slate-700 border-l-2 border-teal-500 pl-2.5 py-1 bg-slate-50/80 rounded-r-lg space-y-0.5"
+                            >
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-bold text-teal-900 uppercase text-[10px] bg-teal-100/80 px-1.5 py-0.5 rounded">
+                                  {m.partOfSpeech || 'word'}
+                                </span>
+                                <span className="text-xs text-slate-900 font-medium leading-snug">
+                                  {m.definition}
+                                </span>
+                              </div>
+                              {m.example && (
+                                <p className="text-[11px] text-slate-500 italic pl-0.5">
+                                  "{m.example}"
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-slate-700 border-l-2 border-teal-500 pl-2.5 py-1 bg-slate-50/80 rounded-r-lg">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {v.partOfSpeech && (
+                              <span className="font-bold text-teal-900 uppercase text-[10px] bg-teal-100/80 px-1.5 py-0.5 rounded">
+                                {v.partOfSpeech}
+                              </span>
+                            )}
+                            <span className="text-xs text-slate-900 font-medium leading-snug">
+                              {v.definition}
+                            </span>
+                          </div>
+                        </div>
+                      )}
 
                       {v.synonyms && v.synonyms.length > 0 && (
-                        <p className="text-[11px] text-slate-500">
-                          <strong className="text-slate-700">Synonyms:</strong> {v.synonyms.slice(0, 4).join(', ')}
+                        <p className="text-[11px] text-slate-600 pt-0.5">
+                          <strong className="text-slate-800">Synonyms:</strong> {v.synonyms.slice(0, 5).join(', ')}
                         </p>
                       )}
                     </div>
@@ -475,7 +594,7 @@ export const VocabularyTab: React.FC<VocabularyTabProps> = ({
                       type="button"
                       onClick={() => handleDeleteVocab(v.id, v.word)}
                       title="Remove word"
-                      className="text-slate-300 hover:text-rose-600 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+                      className="text-slate-300 hover:text-rose-600 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-all cursor-pointer shrink-0"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>

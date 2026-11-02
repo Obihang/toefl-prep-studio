@@ -14,6 +14,7 @@ import {
   calculateListenRepeatSessionScore,
 } from '../../utils/toeflScoring';
 import { TaskSubtitleMeta, TaskReportButton, CollapsibleTaskInstructions } from '../shared/TaskHeaderMeta';
+import { saveMistake } from '../../utils/mistakes';
 
 interface Props {
   task: ListenRepeatTask;
@@ -635,6 +636,22 @@ export const ListenRepeatView: React.FC<Props> = ({
     const user = customTranscript !== undefined ? customTranscript : states[index].userInput;
     const { percentage, wordStatuses } = calculateSentenceMatch(target, user);
     const rubric = scoreListenRepeatSentence(percentage, wordStatuses);
+
+    if (percentage < 95 && user.trim().length > 0) {
+      const missedWords = wordStatuses
+        .filter((w) => w.status === 'missed')
+        .map((w) => w.word)
+        .join(', ');
+      saveMistake(
+        `${task.title} — Sentence ${index + 1}`,
+        'Listen and Repeat',
+        user.trim(),
+        target,
+        missedWords
+          ? `Missed or mispronounced words: ${missedWords} (${percentage}% match — ${rubric.descriptorLabel})`
+          : `Accuracy: ${percentage}% (${rubric.descriptorLabel})`
+      );
+    }
 
     setStates((prev) => {
       const next = [...prev];

@@ -151,19 +151,18 @@ export const CompleteWordsView: React.FC<Props> = ({ task, onNextTask, onComplet
     setChecked(true);
     setScore({ correct: correctCount, total: blanks.length });
 
-    if (auth.currentUser) {
-      evaluated.forEach((b) => {
-        if (!b.isCorrect) {
-          saveMistake(
-            task.title,
-            'complete-words',
-            b.userValue || '(blank)',
-            b.solution,
-            `Complete the word: prefix "${b.prefix}", correct full word ends with "${b.solution}"`
-          );
-        }
-      });
-    }
+    evaluated.forEach((b) => {
+      if (!b.isCorrect) {
+        const fullWord = `${b.prefix}${b.solution}`;
+        saveMistake(
+          `${b.prefix}_____ in "${task.title}"`,
+          'Complete the Words',
+          `${b.prefix}${b.userValue || '...'}`,
+          fullWord,
+          `Full word: "${fullWord}" (prefix "${b.prefix}" + missing suffix "${b.solution}")`
+        );
+      }
+    });
 
     // Save record
     const scaledScore = convertToScaledScore(correctCount, blanks.length);

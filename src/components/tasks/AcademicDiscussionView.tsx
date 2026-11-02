@@ -242,11 +242,11 @@ export const AcademicDiscussionView: React.FC<Props> = ({
     if (evalData) {
       setEvalResult(evalData);
 
-      if (evalData.corrections && auth.currentUser) {
+      if (evalData.corrections) {
         for (const correction of evalData.corrections) {
           await saveMistake(
-            task.id,
-            'academic-discussion',
+            `${task.title || task.id} (Academic Discussion)`,
+            'Academic Discussion',
             correction.original,
             correction.corrected,
             correction.explanation

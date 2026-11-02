@@ -249,10 +249,10 @@ export const BuildSentenceView: React.FC<Props> = ({ task, onNextTask, onComplet
     const isMatch = slotResults.every(Boolean);
     const userFullSentence = reconstructUserSentence(item, cur);
 
-    if (!isMatch && auth.currentUser) {
+    if (!isMatch) {
       saveMistake(
-        task.title,
-        'build-sentence',
+        `${task.title} — "${item.context}"`,
+        'Build a Sentence',
         userFullSentence,
         item.targetSentence,
         item.grammarRule

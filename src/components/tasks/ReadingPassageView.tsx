@@ -70,19 +70,17 @@ export const ReadingPassageView: React.FC<Props> = ({
     const total = task.questions.length;
     const scaledScore = convertToScaledScore(correctCount, total);
 
-    if (auth.currentUser) {
-      task.questions.forEach((q, i) => {
-        if (selectedAnswers[i] !== q.answer) {
-          saveMistake(
-            task.title,
-            'reading-passage',
-            q.options[selectedAnswers[i]] ?? 'No answer',
-            q.options[q.answer],
-            q.why
-          );
-        }
-      });
-    }
+    task.questions.forEach((q, i) => {
+      if (selectedAnswers[i] !== q.answer) {
+        saveMistake(
+          `${task.title} — ${q.q}`,
+          'Academic Reading',
+          q.options[selectedAnswers[i]] ?? 'No answer',
+          q.options[q.answer],
+          q.why
+        );
+      }
+    });
 
     savePracticeRecord({
       taskType: 'reading-passage',
@@ -345,7 +343,18 @@ export const ReadingPassageView: React.FC<Props> = ({
                         {userChoice !== undefined && !checkedQuestions[qIdx] && (
                           <button
                             type="button"
-                            onClick={() => setCheckedQuestions((prev) => ({ ...prev, [qIdx]: true }))}
+                            onClick={() => {
+                              setCheckedQuestions((prev) => ({ ...prev, [qIdx]: true }));
+                              if (userChoice !== q.answer) {
+                                saveMistake(
+                                  `${task.title} — ${q.q}`,
+                                  'Academic Reading',
+                                  q.options[userChoice] ?? 'No answer',
+                                  q.options[q.answer],
+                                  q.why
+                                );
+                              }
+                            }}
                             className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-teal-700 hover:bg-teal-800 text-white transition-colors cursor-pointer"
                           >
                             ✓ Check This Question

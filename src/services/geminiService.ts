@@ -283,6 +283,10 @@ export async function executeWithFallback<T>(
     const loadB = inFlightCount[b] || 0;
     if (loadA !== loadB) return loadA - loadB;
 
+    const servedA = requestsServedCount[a] || 0;
+    const servedB = requestsServedCount[b] || 0;
+    if (servedA !== servedB) return servedA - servedB;
+
     const idxA =
       (baseHealthyOrder.indexOf(a) - cursor + baseHealthyOrder.length) %
       baseHealthyOrder.length;
@@ -296,8 +300,7 @@ export async function executeWithFallback<T>(
   let lastError: any = null;
 
   for (let i = 0; i < orderedCandidates.length; i++) {
-    // Re-sort remaining unvisited candidates by live cooldown & live inFlightCount
-    // so if an earlier provider timed out/failed, we immediately fail over to an idle key (like gemini or groq)!
+    // Re-sort remaining unvisited candidates by live cooldown, live inFlightCount, and lowest requestsServedCount
     if (i > 0 && i < orderedCandidates.length - 1) {
       const remaining = orderedCandidates.slice(i);
       const currentTs = Date.now();
@@ -307,7 +310,10 @@ export async function executeWithFallback<T>(
         if (coolA !== coolB) return coolA - coolB;
         const loadA = inFlightCount[a] || 0;
         const loadB = inFlightCount[b] || 0;
-        return loadA - loadB;
+        if (loadA !== loadB) return loadA - loadB;
+        const servedA = requestsServedCount[a] || 0;
+        const servedB = requestsServedCount[b] || 0;
+        return servedA - servedB;
       });
       orderedCandidates.splice(i, remaining.length, ...remaining);
     }
@@ -381,8 +387,8 @@ export async function executeWithFallback<T>(
       ) {
         cooldownUntil[provider] = Date.now() + 10 * 60_000;
       } else {
-        // Sideline slow (>12s timeout) or failing provider for 90 seconds so workers immediately use healthy idle keys
-        cooldownUntil[provider] = Date.now() + 90_000;
+        // Sideline slow (>12s timeout) or failing provider for 25 seconds so workers immediately use healthy idle keys without locking out the provider for the whole session
+        cooldownUntil[provider] = Date.now() + 25_000;
       }
     } finally {
       if (timeoutId) clearTimeout(timeoutId);

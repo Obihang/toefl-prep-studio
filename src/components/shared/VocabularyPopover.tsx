@@ -72,17 +72,33 @@ export const VocabularyPopover: React.FC<Props> = ({
     if (!wordToSave) return;
     setSavingStatus('saving');
     try {
-      const primary = entryToSave?.meanings?.[0];
+      const meaningsList = Array.isArray(entryToSave?.meanings)
+        ? entryToSave.meanings
+            .filter((m: any) => m && m.definition)
+            .map((m: any) => ({
+              partOfSpeech: m.partOfSpeech || 'word',
+              definition: m.definition || '',
+              example: m.example || undefined,
+            }))
+        : [];
+      const primary = meaningsList[0] || entryToSave?.meanings?.[0];
       const definition = primary?.definition || 'Saved for TOEFL vocabulary practice';
       const partOfSpeech = primary?.partOfSpeech || 'noun';
       const phonetic = entryToSave?.phonetic || '';
+      const synonyms = Array.isArray(entryToSave?.synonyms) ? entryToSave.synonyms : [];
 
       // 1. Save to local storage store (instant, broadcasts toefl_vocab_updated)
       saveVocabLocal(
         wordToSave,
         '',
-        `${partOfSpeech}: ${definition}`,
-        taskType
+        definition,
+        taskType,
+        {
+          phonetic,
+          partOfSpeech,
+          meanings: meaningsList,
+          synonyms,
+        }
       );
 
       // 2. Also save to user's remote/offline Firestore profile if signed in
@@ -91,9 +107,10 @@ export const VocabularyPopover: React.FC<Props> = ({
         definition,
         phonetic,
         partOfSpeech,
-        entryToSave?.synonyms || [],
+        synonyms,
         '',
-        taskType
+        taskType,
+        meaningsList
       );
 
       setSavingStatus('saved');

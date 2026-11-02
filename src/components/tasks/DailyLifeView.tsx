@@ -107,19 +107,17 @@ export const DailyLifeView: React.FC<Props> = ({
     const total = task.questions.length;
     const scaledScore = convertToScaledScore(correctCount, total);
 
-    if (auth.currentUser) {
-      task.questions.forEach((q, i) => {
-        if (selectedAnswers[i] !== q.answer) {
-          saveMistake(
-            task.title,
-            'daily-life',
-            q.options[selectedAnswers[i]] ?? 'No answer',
-            q.options[q.answer],
-            q.why || 'Supported directly by the document.'
-          );
-        }
-      });
-    }
+    task.questions.forEach((q, i) => {
+      if (selectedAnswers[i] !== q.answer) {
+        saveMistake(
+          `${task.title} — ${q.q}`,
+          'Read in Daily Life',
+          q.options[selectedAnswers[i]] ?? 'No answer',
+          q.options[q.answer],
+          q.why || 'Supported directly by the document.'
+        );
+      }
+    });
 
     savePracticeRecord({
       taskType: 'daily-life',
@@ -443,7 +441,18 @@ export const DailyLifeView: React.FC<Props> = ({
                       {userChoice !== undefined && !checkedQuestions[qIdx] && (
                         <button
                           type="button"
-                          onClick={() => setCheckedQuestions((prev) => ({ ...prev, [qIdx]: true }))}
+                          onClick={() => {
+                            setCheckedQuestions((prev) => ({ ...prev, [qIdx]: true }));
+                            if (userChoice !== q.answer) {
+                              saveMistake(
+                                `${task.title} — ${q.q}`,
+                                'Read in Daily Life',
+                                q.options[userChoice] ?? 'No answer',
+                                q.options[q.answer],
+                                q.why || 'Supported directly by the document.'
+                              );
+                            }
+                          }}
                           className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-teal-700 hover:bg-teal-800 text-white transition-colors cursor-pointer"
                         >
                           ✓ Check This Question

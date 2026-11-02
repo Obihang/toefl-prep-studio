@@ -1,6 +1,7 @@
 import React from 'react';
-import { Target, Trophy, Zap, TrendingUp, Calendar, Flame, CheckCircle2, Settings } from 'lucide-react';
+import { Target, Trophy, Zap, TrendingUp, Calendar, Flame, CheckCircle2, Settings, Layers, ArrowRight } from 'lucide-react';
 import { TASK_DEFINITIONS } from '../../../types/taskTypes';
+import { CURATED_MOCK_EXAM_SETS } from '../../../utils/mockExamSetsBank';
 
 interface GoalsTabProps {
   targetScoreNum: number;
@@ -16,6 +17,11 @@ interface GoalsTabProps {
   sectionTargetScore: number;
   loadingQuestionCounts: boolean;
   questionCounts: Record<string, number>;
+  examQuestionCounts?: Record<string, number>;
+  coachQuestionCounts?: Record<string, number>;
+  selectedBankView?: 'exam' | 'coach' | 'mock';
+  onSelectBankView?: (view: 'exam' | 'coach' | 'mock') => void;
+  onOpenMockTestCenter?: () => void;
   goalsSavedSuccess: boolean;
   targetScoreInput: string;
   setTargetScoreInput: (val: string) => void;
@@ -41,16 +47,30 @@ export const GoalsTab: React.FC<GoalsTabProps> = ({
   sectionTargetScore,
   loadingQuestionCounts,
   questionCounts,
+  examQuestionCounts,
+  coachQuestionCounts,
+  selectedBankView = 'exam',
+  onSelectBankView,
+  onOpenMockTestCenter,
   goalsSavedSuccess,
   targetScoreInput,
   setTargetScoreInput,
   setTestDateInput,
   setWeeklyGoalInput,
   handleSaveGoals,
-  mockExamSetsCount = 3,
+  mockExamSetsCount = 5,
   examBankTotal,
   coachBankTotal,
 }) => {
+  const activeCounts =
+    selectedBankView === 'coach'
+      ? coachQuestionCounts && Object.keys(coachQuestionCounts).length > 0
+        ? coachQuestionCounts
+        : questionCounts
+      : examQuestionCounts && Object.keys(examQuestionCounts).length > 0
+      ? examQuestionCounts
+      : questionCounts;
+
   return (
     <div className="space-y-6">
       
@@ -375,46 +395,153 @@ export const GoalsTab: React.FC<GoalsTabProps> = ({
 
       {/* Saved Questions Database Statistics */}
       <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-2xs mt-6">
-        <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h4 className="font-bold text-slate-900 text-sm flex items-center gap-2">
               <Target className="w-4 h-4 text-teal-700" />
-              Saved Questions Database Statistics (Total Bank)
+              <span>
+                Saved Questions Database Statistics —{' '}
+                {selectedBankView === 'coach'
+                  ? 'Coach & Marathon Bank'
+                  : selectedBankView === 'mock'
+                  ? 'Full Mock Exam Sets'
+                  : 'Official Exam Mode Bank'}
+              </span>
             </h4>
             <p className="text-xs text-slate-500 mt-0.5">
-              Isolated database partitions for Exam Mode Bank, Coach Mode Bank, and Full Mock Exam Sets.
+              Click any database partition below to inspect its questions or launch a full-length adaptive mock exam.
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-semibold text-teal-800 bg-teal-50 px-2.5 py-1 rounded-full border border-teal-200 shrink-0">
+            <button
+              type="button"
+              onClick={() => onSelectBankView?.('exam')}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all shrink-0 cursor-pointer ${
+                selectedBankView === 'exam'
+                  ? 'bg-teal-700 text-white border-teal-700 ring-2 ring-teal-500/30 shadow-xs'
+                  : 'text-teal-800 bg-teal-50 border-teal-200 hover:bg-teal-100'
+              }`}
+            >
               🎯 Exam Mode Bank: {examBankTotal ?? Object.values(questionCounts).reduce((a, b) => a + b, 0)} Questions
-            </span>
-            {typeof coachBankTotal === 'number' && (
-              <span className="text-xs font-semibold text-indigo-800 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-200 shrink-0">
-                🎓 Coach Mode Bank: {coachBankTotal} Questions
-              </span>
-            )}
-            <span className="text-xs font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 shrink-0">
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectBankView?.('coach')}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all shrink-0 cursor-pointer ${
+                selectedBankView === 'coach'
+                  ? 'bg-indigo-700 text-white border-indigo-700 ring-2 ring-indigo-500/30 shadow-xs'
+                  : 'text-indigo-800 bg-indigo-50 border-indigo-200 hover:bg-indigo-100'
+              }`}
+            >
+              🎓 Coach Mode Bank: {coachBankTotal ?? 120} Questions
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectBankView?.('mock')}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all shrink-0 cursor-pointer ${
+                selectedBankView === 'mock'
+                  ? 'bg-emerald-700 text-white border-emerald-700 ring-2 ring-emerald-500/30 shadow-xs'
+                  : 'text-emerald-800 bg-emerald-50 border-emerald-200 hover:bg-emerald-100'
+              }`}
+            >
               📚 Full Mock Exam Sets: {mockExamSetsCount} Sets
-            </span>
+            </button>
           </div>
         </div>
 
         {loadingQuestionCounts ? (
           <div className="text-xs text-slate-400 py-4 text-center">Loading database question counts per question type...</div>
+        ) : selectedBankView === 'mock' ? (
+          <div className="space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-emerald-50/70 border border-emerald-200 rounded-xl p-3.5">
+              <div>
+                <div className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                  <Layers className="w-4 h-4 text-emerald-700" />
+                  <span>2026 Multistage Adaptive Full-Length Mock Exam Sets ({CURATED_MOCK_EXAM_SETS.length} Curated Sets)</span>
+                </div>
+                <p className="text-[11px] text-emerald-800 mt-0.5">
+                  Each set includes Reading Module 1 + Adaptive Module 2 (Hard/Easy), Listening Module 1 + Adaptive Module 2 (Hard/Easy), Writing (3 tasks), and Speaking (2 tasks).
+                </p>
+              </div>
+              {onOpenMockTestCenter && (
+                <button
+                  type="button"
+                  onClick={onOpenMockTestCenter}
+                  className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg transition-colors shrink-0 cursor-pointer shadow-2xs"
+                >
+                  <span>Open Mock Test Center</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {CURATED_MOCK_EXAM_SETS.map((set, idx) => (
+                <div
+                  key={set.id}
+                  className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-col justify-between gap-3 shadow-2xs hover:border-emerald-300 transition-colors"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                        Set #{idx + 1} · Adaptive
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-500">8 Modules · 4 Sections</span>
+                    </div>
+                    <div className="text-xs font-bold text-slate-900 pt-0.5">{set.title}</div>
+                    {set.subtitle && (
+                      <p className="text-[11px] text-slate-600 leading-snug">{set.subtitle}</p>
+                    )}
+                  </div>
+                  {onOpenMockTestCenter && (
+                    <div className="pt-1 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={onOpenMockTestCenter}
+                        className="text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 flex items-center gap-1 cursor-pointer"
+                      >
+                        <span>Practice in Mock Test Center</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             {TASK_DEFINITIONS.map((def) => {
-              const count = questionCounts[def.id] ?? 0;
+              const count = activeCounts[def.id] ?? 0;
+              const isCoach = selectedBankView === 'coach';
               return (
-                <div key={def.id} className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between shadow-2xs">
+                <div
+                  key={def.id}
+                  className={`p-3.5 border rounded-xl flex items-center justify-between shadow-2xs ${
+                    isCoach
+                      ? 'bg-indigo-50/40 border-indigo-200/80'
+                      : 'bg-slate-50 border-slate-200'
+                  }`}
+                >
                   <div className="space-y-1">
                     <div className="text-xs font-bold text-slate-800">{def.name}</div>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-teal-100 text-teal-800">
+                    <span
+                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${
+                        isCoach
+                          ? 'bg-indigo-100 text-indigo-800'
+                          : 'bg-teal-100 text-teal-800'
+                      }`}
+                    >
                       {def.section}
                     </span>
                   </div>
-                  <div className="text-sm font-bold text-teal-900 font-mono bg-white px-3 py-1 rounded-lg border border-teal-200 shadow-2xs shrink-0">
+                  <div
+                    className={`text-sm font-bold font-mono bg-white px-3 py-1 rounded-lg border shadow-2xs shrink-0 ${
+                      isCoach
+                        ? 'text-indigo-900 border-indigo-200'
+                        : 'text-teal-900 border-teal-200'
+                    }`}
+                  >
                     {count}
                   </div>
                 </div>

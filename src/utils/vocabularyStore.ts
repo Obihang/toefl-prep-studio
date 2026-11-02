@@ -5,6 +5,10 @@ export interface VocabularyItem {
   word: string;
   contextSentence?: string;
   definition?: string;
+  phonetic?: string;
+  partOfSpeech?: string;
+  meanings?: Array<{ partOfSpeech: string; definition: string; example?: string }>;
+  synonyms?: string[];
   section?: string;
   timestamp: number;
 }
@@ -25,19 +29,37 @@ export function saveVocabularyWord(
   word: string,
   contextSentence?: string,
   definition?: string,
-  section?: string
+  section?: string,
+  extra?: {
+    phonetic?: string;
+    partOfSpeech?: string;
+    meanings?: Array<{ partOfSpeech: string; definition: string; example?: string }>;
+    synonyms?: string[];
+  }
 ): VocabularyItem {
   const cleanWord = word.trim().replace(/^[^a-zA-Z]+|[^a-zA-Z]+$/g, '');
   const id = cleanWord.toLowerCase();
   const list = getVocabularyList();
 
   const existingIdx = list.findIndex((item) => item.id === id);
+  const existing = existingIdx >= 0 ? list[existingIdx] : undefined;
+
   const newItem: VocabularyItem = {
     id,
     word: cleanWord,
-    contextSentence: contextSentence?.trim(),
-    definition: definition?.trim(),
-    section: section || 'Practice',
+    contextSentence: contextSentence?.trim() || existing?.contextSentence,
+    definition: definition?.trim() || existing?.definition,
+    phonetic: extra?.phonetic || existing?.phonetic || '',
+    partOfSpeech: extra?.partOfSpeech || existing?.partOfSpeech || '',
+    meanings:
+      extra?.meanings && extra.meanings.length > 0
+        ? extra.meanings
+        : existing?.meanings || [],
+    synonyms:
+      extra?.synonyms && extra.synonyms.length > 0
+        ? extra.synonyms
+        : existing?.synonyms || [],
+    section: section || existing?.section || 'Practice',
     timestamp: Date.now(),
   };
 

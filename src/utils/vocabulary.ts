@@ -1,6 +1,12 @@
 import { db, auth } from '../firebase';
 import { collection, addDoc, getDocs, query, orderBy, where, deleteDoc, updateDoc, doc, serverTimestamp, getDoc } from 'firebase/firestore';
 
+export interface VocabularyMeaning {
+  partOfSpeech: string;
+  definition: string;
+  example?: string;
+}
+
 export interface VocabularyWord {
   id: string;
   userId: string;
@@ -8,6 +14,7 @@ export interface VocabularyWord {
   definition: string;
   phonetic?: string;
   partOfSpeech?: string;
+  meanings?: VocabularyMeaning[];
   synonyms?: string[];
   context?: string;
   taskType?: string;
@@ -25,7 +32,8 @@ export async function saveVocabularyWord(
   partOfSpeech?: string,
   synonyms?: string[],
   context?: string,
-  taskType?: string
+  taskType?: string,
+  meanings?: VocabularyMeaning[]
 ) {
   if (!auth.currentUser) return;
   
@@ -43,6 +51,7 @@ export async function saveVocabularyWord(
       definition,
       phonetic: phonetic || '',
       partOfSpeech: partOfSpeech || '',
+      meanings: Array.isArray(meanings) ? meanings : [],
       synonyms: synonyms || [],
       context: context || '',
       taskType: taskType || 'general',

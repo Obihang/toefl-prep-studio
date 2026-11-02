@@ -137,7 +137,11 @@ export async function callOpenAiCompatibleChat(options: LlmCallOptions & { requi
     temperature,
   };
 
-  if (shouldRequireJson) {
+  if (
+    shouldRequireJson &&
+    !resolved.baseUrl.includes('nvidia.com') &&
+    !resolved.baseUrl.includes('openrouter.ai')
+  ) {
     bodyPayload.response_format = { type: 'json_object' };
   }
 

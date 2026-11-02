@@ -2371,10 +2371,21 @@ export default function App() {
           onNavigateToTask={(target) => {
             setIsDashboardOpen(false);
             const lower = (target || '').toLowerCase();
+            if (lower === 'mock-test') {
+              setIsMockTest(true);
+              return;
+            }
+            setIsMockTest(false);
             if (lower === 'speaking' || lower === 'speaking-interview') {
               setCurrentTaskType('speaking-interview');
             } else if (lower === 'listening' || lower === 'listening-dialogue') {
               setCurrentTaskType('listening-dialogue');
+            } else if (lower === 'listening-choose-response') {
+              setCurrentTaskType('listening-choose-response');
+            } else if (lower === 'listening-announcement') {
+              setCurrentTaskType('listening-announcement');
+            } else if (lower === 'listening-academic-talk') {
+              setCurrentTaskType('listening-academic-talk');
             } else if (lower === 'listen-repeat') {
               setCurrentTaskType('listen-repeat');
             } else if (lower === 'writing' || lower === 'academic-discussion') {
@@ -2385,6 +2396,8 @@ export default function App() {
               setCurrentTaskType('build-sentence');
             } else if (lower === 'reading' || lower === 'reading-passage') {
               setCurrentTaskType('reading-passage');
+            } else if (lower === 'daily-life') {
+              setCurrentTaskType('daily-life');
             } else if (lower === 'complete-words') {
               setCurrentTaskType('complete-words');
             }

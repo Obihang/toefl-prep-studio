@@ -348,13 +348,13 @@ export const ListeningChooseResponseView: React.FC<Props> = ({
         typeof it.answer === 'number' ? it.answer : Number(it.correctAnswer ?? 0);
       if (userAns === rightAns) {
         correctTotal++;
-      } else if (auth.currentUser && userAns !== undefined) {
+      } else if (userAns !== undefined) {
         saveMistake(
           `${task.title} (Item ${idx + 1})`,
-          'listening-choose-response',
-          it.options[userAns] ?? 'No answer',
-          it.options[rightAns],
-          it.why || it.explanation || ''
+          'Listen & Choose a Response',
+          it.options?.[userAns] ?? 'No answer',
+          it.options?.[rightAns] ?? '',
+          it.why || it.explanation || 'Most natural and contextually appropriate response.'
         );
       }
     });
@@ -642,12 +642,22 @@ export const ListeningChooseResponseView: React.FC<Props> = ({
                 {selectedIdx !== null && (
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      const nextChecked = !checkedItems[currentIndex];
                       setCheckedItems((prev) => ({
                         ...prev,
-                        [currentIndex]: !prev[currentIndex],
-                      }))
-                    }
+                        [currentIndex]: nextChecked,
+                      }));
+                      if (nextChecked && selectedIdx !== correctAnswerIdx) {
+                        saveMistake(
+                          `${task.title} (Item ${currentIndex + 1})`,
+                          'Listen & Choose a Response',
+                          currentItem?.options?.[selectedIdx] ?? 'No answer',
+                          currentItem?.options?.[correctAnswerIdx] ?? '',
+                          currentItem?.why || currentItem?.explanation || 'Most natural and contextually appropriate response.'
+                        );
+                      }
+                    }}
                     className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-md transition-colors cursor-pointer"
                   >
                     {checkedItems[currentIndex] ? 'Hide Check' : '✓ Check Item'}
