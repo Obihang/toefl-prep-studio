@@ -2741,22 +2741,33 @@ export function normalizeQuestionBankItem(rawItem: any, fallbackTaskType?: strin
   const rawContent =
     rawItem.content && typeof rawItem.content === 'object'
       ? { ...rawItem, ...rawItem.content }
+      : rawItem.data && typeof rawItem.data === 'object'
+      ? { ...rawItem, ...rawItem.data }
       : { ...rawItem };
 
   const level = normalizeDifficultyLabel(rawItem.level || rawContent.level || rawItem.difficulty);
   const topic = normalizeTopicLabel(rawItem.topic || rawContent.topic, rawContent);
 
   const normalizedContent = normalizeTaskContent(taskType, rawContent);
+  const resolvedId = String(
+    rawItem.id || rawItem.questionDocId || rawContent.id || normalizedContent?.id || `${taskType}-${Date.now()}`
+  );
+  const resolvedTitle = String(
+    normalizedContent?.title || rawContent.title || rawItem.title || ''
+  ).trim();
 
   return {
     ...normalizedContent,
-    id: String(rawItem.id || rawContent.id || `${taskType}-${Date.now()}`),
+    id: resolvedId,
+    ...(resolvedTitle ? { title: resolvedTitle } : {}),
     taskType,
     level,
     difficulty: level,
     topic,
     content: {
       ...normalizedContent,
+      id: resolvedId,
+      ...(resolvedTitle ? { title: resolvedTitle } : {}),
       level,
       difficulty: level,
       topic,
@@ -2778,6 +2789,12 @@ export function normalizeTaskData(
           ...raw.content,
           ...(options?.coachMode ? { coachMode: true, mode: 'coach' } : {}),
         }
+      : raw.data && typeof raw.data === 'object'
+      ? {
+          ...raw,
+          ...raw.data,
+          ...(options?.coachMode ? { coachMode: true, mode: 'coach' } : {}),
+        }
       : {
           ...raw,
           ...(options?.coachMode ? { coachMode: true, mode: 'coach' } : {}),
@@ -2786,10 +2803,18 @@ export function normalizeTaskData(
   const level = normalizeDifficultyLabel(raw.level || baseObj.level || raw.difficulty);
   const topic = normalizeTopicLabel(raw.topic || baseObj.topic, baseObj);
   const normalizedContent = normalizeTaskContent(taskType, baseObj);
+  const resolvedId = String(
+    raw.id || raw.questionDocId || baseObj.id || normalizedContent?.id || ''
+  ).trim();
+  const resolvedTitle = String(
+    normalizedContent?.title || baseObj.title || raw.title || ''
+  ).trim();
 
   return {
     ...raw,
     ...normalizedContent,
+    ...(resolvedId ? { id: resolvedId } : {}),
+    ...(resolvedTitle ? { title: resolvedTitle } : {}),
     taskType,
     level,
     difficulty: level,
@@ -2799,6 +2824,8 @@ export function normalizeTaskData(
           content: {
             ...raw.content,
             ...normalizedContent,
+            ...(resolvedId ? { id: resolvedId } : {}),
+            ...(resolvedTitle ? { title: resolvedTitle } : {}),
             level,
             difficulty: level,
             topic,
@@ -2807,3 +2834,4 @@ export function normalizeTaskData(
       : {}),
   };
 }
+

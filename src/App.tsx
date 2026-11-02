@@ -295,17 +295,168 @@ export default function App() {
     countsPerTaskType: Record<string, number>;
   } | null>(null);
 
-  // Always fetch and sync curated shard for current section and total bank into IndexedDB and cache
+  // Helper to get fallback pool before async shard load finishes
+  const getInitialFallbackPool = (type: string, mode: 'exam' | 'coach'): any[] => {
+    const loaded = getLoadedCuratedTasks(type, level, topic, mode);
+    if (loaded.length > 0) return loaded;
+    if (mode === 'coach') {
+      const coachKey = type.replace(/-/g, '_');
+      return COACH_CURATED_BANK[coachKey] || COACH_CURATED_BANK[type] || [];
+    }
+    switch (type) {
+      case 'complete-words':
+        return CURATED_COMPLETE_WORDS;
+      case 'reading-passage':
+      case 'reading-academic':
+        return CURATED_READING_PASSAGES;
+      case 'listening-dialogue':
+        return CURATED_LISTENING;
+      case 'listen-repeat':
+        return CURATED_LISTEN_REPEAT;
+      case 'speaking-interview':
+        return CURATED_SPEAKING_INTERVIEWS;
+      case 'build-sentence':
+        return CURATED_BUILD_SENTENCES;
+      case 'write-email':
+        return CURATED_WRITE_EMAILS;
+      case 'academic-discussion':
+      default:
+        return CURATED_ACADEMIC_DISCUSSIONS;
+    }
+  };
+
+  // Pick a random index prioritizing unsolved questions first
+  const pickRandomUnsolvedIdx = (
+    pool: any[],
+    completedSet: Set<string>,
+    excludeIdx?: number,
+    excludeId?: string,
+    excludeTitle?: string
+  ): number => {
+    if (!pool || pool.length <= 1) return 0;
+    const unsolvedExcludingCurrent: number[] = [];
+    const allUnsolved: number[] = [];
+    for (let i = 0; i < pool.length; i++) {
+      const q = pool[i];
+      if (!isQuestionCompleted(q, completedSet)) {
+        allUnsolved.push(i);
+        const qId = String(q?.id || q?.questionDocId || q?.data?.id || '');
+        const qTitle = String(q?.title || q?.data?.title || q?.content?.title || '');
+        const isSameIdx = excludeIdx !== undefined && i === excludeIdx % pool.length;
+        const isSameId = Boolean(excludeId && qId && qId === excludeId);
+        const isSameTitle = Boolean(excludeTitle && qTitle && qTitle === excludeTitle);
+        if (!isSameIdx && !isSameId && !isSameTitle) {
+          unsolvedExcludingCurrent.push(i);
+        }
+      }
+    }
+    if (unsolvedExcludingCurrent.length > 0) {
+      return unsolvedExcludingCurrent[Math.floor(Math.random() * unsolvedExcludingCurrent.length)];
+    }
+    if (allUnsolved.length > 0) {
+      return allUnsolved[Math.floor(Math.random() * allUnsolved.length)];
+    }
+    // Fallback to random question from full bank only if 100% of questions are solved
+    const candidates: number[] = [];
+    for (let i = 0; i < pool.length; i++) {
+      if (excludeIdx === undefined || i !== excludeIdx % pool.length) {
+        candidates.push(i);
+      }
+    }
+    return candidates.length > 0
+      ? candidates[Math.floor(Math.random() * candidates.length)]
+      : Math.floor(Math.random() * pool.length);
+  };
+
+  // Active task payload per type
+  const [customTasks, setCustomTasks] = useState<Record<string, any>>({});
+  const [curatedIndices, setCuratedIndices] = useState<Record<string, number>>(() => {
+    const completedSet = new Set(getCompletedQuestionIds());
+    const initialTypes = [
+      'complete-words',
+      'daily-life',
+      'reading-academic',
+      'reading-passage',
+      'listening-choose-response',
+      'listening-dialogue',
+      'listening-announcement',
+      'listening-academic-talk',
+      'listen-repeat',
+      'speaking-interview',
+      'build-sentence',
+      'write-email',
+      'academic-discussion',
+    ];
+    const initMap: Record<string, number> = {};
+    for (const t of initialTypes) {
+      const pool = getInitialFallbackPool(t, practiceMode);
+      initMap[t] = pickRandomUnsolvedIdx(pool, completedSet);
+    }
+    return initMap;
+  });
+
+  // Always fetch and sync curated shard for current section and total bank into IndexedDB and cache,
+  // and immediately select a randomized unsolved question on startup, tab switch, section switch, or mode switch!
   useEffect(() => {
     let isMounted = true;
+    const selectRandomUnsolvedFromBank = () => {
+      const bank = getLoadedCuratedTasks(currentTaskType, level, topic, practiceMode);
+      if (!isMounted || bank.length === 0) return;
+      const completedSet = new Set(getCompletedQuestionIds());
+      const unsolved = bank.filter((q) => !isQuestionCompleted(q, completedSet));
+      const poolToPick = unsolved.length > 0 ? unsolved : bank;
+      const chosen = poolToPick[Math.floor(Math.random() * poolToPick.length)];
+      const chosenIdx = bank.findIndex(
+        (q) =>
+          (chosen?.id && q.id === chosen.id) ||
+          (chosen?.title && q.title === chosen.title) ||
+          q === chosen
+      );
+      if (chosenIdx !== -1) {
+        setCuratedIndices((prev) => ({
+          ...prev,
+          [currentTaskType]: chosenIdx,
+        }));
+      }
+      if (chosen) {
+        setCustomTasks((prev) => ({
+          ...prev,
+          [currentTaskType]: normalizeTaskData(chosen, currentTaskType),
+        }));
+      }
+    };
+
     const syncBank = async () => {
       await loadCuratedShard(currentTaskType, practiceMode);
+      if (!isMounted) return;
+      selectRandomUnsolvedFromBank();
+
       const stats = await syncCuratedQuestionBank(practiceMode);
       if (isMounted) {
         setBankStats({
           totalQuestions: stats.totalQuestions,
           totalCurated: stats.totalQuestions,
           countsPerTaskType: stats.counts,
+        });
+        // If current active question was solved or bank expanded after full sync, ensure an unsolved question is active
+        setCustomTasks((prev) => {
+          const currentActive = prev[currentTaskType];
+          const completedSet = new Set(getCompletedQuestionIds());
+          if (!currentActive || isQuestionCompleted(currentActive, completedSet)) {
+            const bank = getLoadedCuratedTasks(currentTaskType, level, topic, practiceMode);
+            if (bank.length > 0) {
+              const unsolved = bank.filter((q) => !isQuestionCompleted(q, completedSet));
+              const poolToPick = unsolved.length > 0 ? unsolved : bank;
+              const chosen = poolToPick[Math.floor(Math.random() * poolToPick.length)];
+              if (chosen) {
+                return {
+                  ...prev,
+                  [currentTaskType]: normalizeTaskData(chosen, currentTaskType),
+                };
+              }
+            }
+          }
+          return prev;
         });
       }
     };
@@ -314,24 +465,6 @@ export default function App() {
       isMounted = false;
     };
   }, [currentTaskType, practiceMode]);
-
-  // Active task payload per type
-  const [customTasks, setCustomTasks] = useState<Record<string, any>>({});
-  const [curatedIndices, setCuratedIndices] = useState<Record<string, number>>({
-    'complete-words': 0,
-    'daily-life': 0,
-    'reading-academic': 0,
-    'reading-passage': 0,
-    'listening-choose-response': 0,
-    'listening-dialogue': 0,
-    'listening-announcement': 0,
-    'listening-academic-talk': 0,
-    'listen-repeat': 0,
-    'speaking-interview': 0,
-    'build-sentence': 0,
-    'write-email': 0,
-    'academic-discussion': 0,
-  });
 
   // Background question pre-fetch queue for instant generation (strictly isolated by practiceMode)
   const [prefetchedQueue, setPrefetchedQueue] = useState<PrefetchQueue>(() => loadPrefetchQueueFromStorage(practiceMode));

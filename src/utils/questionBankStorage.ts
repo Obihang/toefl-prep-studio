@@ -1898,7 +1898,20 @@ export async function getSharedQuestions(
       const sig = getQuestionContentSignature(tId, item);
       if (seenSigs.has(sig)) continue;
       seenSigs.add(sig);
-      results.push(item);
+      const resolvedId = String(item.id || item.questionDocId || item.content?.id || item.data?.id || sig);
+      const resolvedTitle = String(item.title || item.content?.title || item.data?.title || '').trim();
+      const enrichedItem = {
+        ...item,
+        id: resolvedId,
+        ...(resolvedTitle ? { title: resolvedTitle } : {}),
+        ...(item.data && typeof item.data === 'object'
+          ? { data: { ...item.data, id: resolvedId, ...(resolvedTitle ? { title: resolvedTitle } : {}) } }
+          : {}),
+        ...(item.content && typeof item.content === 'object'
+          ? { content: { ...item.content, id: resolvedId, ...(resolvedTitle ? { title: resolvedTitle } : {}) } }
+          : {}),
+      };
+      results.push(enrichedItem);
     }
   }
 
@@ -2917,19 +2930,59 @@ export async function repairAndAuditQuestionBank(
     const collectionName = getFirestoreCollectionName(mode);
     const targetMemCache = getMemoryCacheForMode(mode);
 
-    // Gather all records from IndexedDB, Firestore, and memory for this mode
-    const rawRecordsMap = new Map<
-      string,
-      {
-        docId: string;
-        raw: any;
-        fromFirestore: boolean;
-        fromIdb: boolean;
-      }
-    >();
+    // Gather all records from IndexedDB, Firestore, and memory for this mode,
+    // unifying static shard / IndexedDB / Firestore copies of the same question so
+    // normal synced records are never double-counted as duplicates.
+    interface UnifiedAuditEntry {
+      docId: string;
+      firestoreDocId?: string;
+      raw: any;
+      fromFirestore: boolean;
+      fromIdb: boolean;
+    }
 
-    // 1. Read IndexedDB
+    const rawRecordsMap = new Map<string, UnifiedAuditEntry>();
+    const innerIdToMapKey = new Map<string, string>();
+    const sigToMapKey = new Map<string, string>();
+
+    const getRecordSig = (rawObj: any): string => {
+      const contentObj = rawObj?.content || rawObj;
+      const tType = canonicalizeTaskType(
+        rawObj?.taskType || contentObj?.taskType || rawObj?.type || 'academic-discussion'
+      );
+      return getQuestionContentSignature(tType, contentObj);
+    };
+
+    const getRecordTitleKey = (rawObj: any): string => {
+      const contentObj = rawObj?.content || rawObj;
+      const tType = canonicalizeTaskType(
+        rawObj?.taskType || contentObj?.taskType || rawObj?.type || 'academic-discussion'
+      );
+      const rawTitle = String(
+        contentObj?.title ||
+          contentObj?.passage?.slice(0, 80) ||
+          contentObj?.text?.slice(0, 80) ||
+          contentObj?.script?.slice(0, 80) ||
+          ''
+      )
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+      return rawTitle.length >= 12 ? `${tType}::title::${rawTitle}` : '';
+    };
+
+    const firestoreBatchOps: Array<{
+      op: 'set' | 'delete';
+      docId: string;
+      payload?: any;
+    }> = [];
+
+    // 1. Read IndexedDB (detecting only genuine duplicate rows inside IndexedDB)
     let dbInstance: IDBDatabase | null = null;
+    const seenIdbSigs = new Set<string>();
+    const seenIdbIds = new Set<string>();
+    const seenIdbTitles = new Set<string>();
+
     try {
       dbInstance = await openIndexedDB();
       const idbRows: any[] = await new Promise((resolve) => {
@@ -2939,42 +2992,106 @@ export async function repairAndAuditQuestionBank(
         req.onerror = () => resolve([]);
       });
       for (const row of idbRows) {
-        const docId = String(row.id || row.content?.id || '');
-        if (docId) {
-          rawRecordsMap.set(docId, {
-            docId,
-            raw: row,
-            fromFirestore: false,
-            fromIdb: true,
-          });
+        const docId = String(row.id || row.content?.id || '').trim();
+        if (!docId) continue;
+        const innerId = String(row.content?.id || docId).trim();
+        const sig = getRecordSig(row);
+        const titleKey = getRecordTitleKey(row);
+
+        if (
+          seenIdbIds.has(docId) ||
+          (innerId && seenIdbIds.has(innerId)) ||
+          seenIdbSigs.has(sig) ||
+          (titleKey && seenIdbTitles.has(titleKey))
+        ) {
+          // Genuine duplicate row stored inside IndexedDB
+          scanned++;
+          duplicatesRemoved++;
+          continue;
         }
+
+        seenIdbIds.add(docId);
+        if (innerId) seenIdbIds.add(innerId);
+        seenIdbSigs.add(sig);
+        if (titleKey) seenIdbTitles.add(titleKey);
+
+        rawRecordsMap.set(docId, {
+          docId,
+          raw: row,
+          fromFirestore: false,
+          fromIdb: true,
+        });
+        innerIdToMapKey.set(docId, docId);
+        if (innerId) innerIdToMapKey.set(innerId, docId);
+        sigToMapKey.set(sig, docId);
+        if (titleKey) sigToMapKey.set(titleKey, docId);
       }
     } catch {}
 
-    // 2. Read Firestore
+    // 2. Read Firestore (unifying synced Firestore docs with their matching IndexedDB/static shard item,
+    //    and only counting duplicatesRemoved if Firestore itself has multiple docs for the same question!)
+    const seenFsSigs = new Set<string>();
+    const seenFsIds = new Set<string>();
+    const seenFsTitles = new Set<string>();
+
     try {
       await ensureAuthenticated();
       if (db) {
         const snap = await getDocs(collection(db, collectionName));
         snap.forEach((docSnap) => {
-          const docId = docSnap.id;
+          const fsDocId = docSnap.id;
           const fsData = docSnap.data();
-          const existing = rawRecordsMap.get(docId);
+          const innerId = String(fsData?.content?.id || fsData?.id || fsDocId).trim();
+          const sig = getRecordSig(fsData);
+          const titleKey = getRecordTitleKey(fsData);
+
+          // Check if Firestore ITSELF already has another document for this exact question
+          if (
+            seenFsIds.has(fsDocId) ||
+            (innerId && seenFsIds.has(innerId)) ||
+            seenFsSigs.has(sig) ||
+            (titleKey && seenFsTitles.has(titleKey))
+          ) {
+            scanned++;
+            duplicatesRemoved++;
+            firestoreBatchOps.push({ op: 'delete', docId: fsDocId });
+            return;
+          }
+
+          seenFsIds.add(fsDocId);
+          if (innerId) seenFsIds.add(innerId);
+          seenFsSigs.add(sig);
+          if (titleKey) seenFsTitles.add(titleKey);
+
+          const matchedKey =
+            (rawRecordsMap.has(fsDocId) ? fsDocId : undefined) ||
+            (innerId ? innerIdToMapKey.get(innerId) : undefined) ||
+            sigToMapKey.get(sig) ||
+            (titleKey ? sigToMapKey.get(titleKey) : undefined);
+
           const isFsEdited = Boolean(
             fsData?.isManualDevEdit ||
               fsData?.isEdited ||
               fsData?.content?.isManualDevEdit ||
               fsData?.content?.isEdited
           );
-          if (!existing) {
-            rawRecordsMap.set(docId, {
-              docId,
+
+          if (!matchedKey) {
+            rawRecordsMap.set(fsDocId, {
+              docId: fsDocId,
+              firestoreDocId: fsDocId,
               raw: fsData,
               fromFirestore: true,
               fromIdb: false,
             });
+            innerIdToMapKey.set(fsDocId, fsDocId);
+            if (innerId) innerIdToMapKey.set(innerId, fsDocId);
+            sigToMapKey.set(sig, fsDocId);
+            if (titleKey) sigToMapKey.set(titleKey, fsDocId);
           } else {
+            const existing = rawRecordsMap.get(matchedKey)!;
             existing.fromFirestore = true;
+            existing.firestoreDocId = fsDocId;
             if (isFsEdited && !existing.raw?.isManualDevEdit && !existing.raw?.isEdited) {
               existing.raw = fsData;
             }
@@ -2983,12 +3100,21 @@ export async function repairAndAuditQuestionBank(
       }
     } catch {}
 
-    // 3. Also ensure in-memory items are included if not already in map
+    // 3. Also ensure in-memory items are included if not already in map (matching by ID, innerId, or signature)
     for (const tId of CANONICAL_TASK_IDS) {
       const memList = targetMemCache[tId] || [];
       for (const item of memList) {
-        const docId = String(item.questionDocId || item.id || '');
-        if (docId && !rawRecordsMap.has(docId)) {
+        const docId = String(item.questionDocId || item.id || '').trim();
+        const innerId = String(item.id || docId).trim();
+        const sig = getQuestionContentSignature(tId, item);
+        const titleKey = getRecordTitleKey(item);
+        const matchedKey =
+          (docId && rawRecordsMap.has(docId) ? docId : undefined) ||
+          (innerId ? innerIdToMapKey.get(innerId) : undefined) ||
+          sigToMapKey.get(sig) ||
+          (titleKey ? sigToMapKey.get(titleKey) : undefined);
+
+        if (docId && !matchedKey) {
           rawRecordsMap.set(docId, {
             docId,
             raw: {
@@ -3005,6 +3131,10 @@ export async function repairAndAuditQuestionBank(
             fromFirestore: false,
             fromIdb: false,
           });
+          innerIdToMapKey.set(docId, docId);
+          if (innerId) innerIdToMapKey.set(innerId, docId);
+          sigToMapKey.set(sig, docId);
+          if (titleKey) sigToMapKey.set(titleKey, docId);
         }
       }
     }
@@ -3018,14 +3148,9 @@ export async function repairAndAuditQuestionBank(
       cleanMemByTask[tId] = [];
     }
 
-    const firestoreBatchOps: Array<{
-      op: 'set' | 'delete';
-      docId: string;
-      payload?: any;
-    }> = [];
-
-    for (const { docId, raw, fromFirestore } of rawRecordsMap.values()) {
+    for (const { docId, firestoreDocId, raw, fromFirestore } of rawRecordsMap.values()) {
       scanned++;
+      const targetFsDocId = firestoreDocId || docId;
       const rawContent = raw.content || raw;
       const innerId = String(rawContent?.id || docId || '');
       const tType = canonicalizeTaskType(
@@ -3036,6 +3161,7 @@ export async function repairAndAuditQuestionBank(
       const preSig = getQuestionContentSignature(tType, rawContent);
       if (
         deletedSet.has(docId) ||
+        (firestoreDocId && deletedSet.has(firestoreDocId)) ||
         (innerId && deletedSet.has(innerId)) ||
         deletedSet.has(preSig) ||
         raw.deleted === true ||
@@ -3045,7 +3171,7 @@ export async function repairAndAuditQuestionBank(
       ) {
         corruptedPurged++;
         if (fromFirestore) {
-          firestoreBatchOps.push({ op: 'delete', docId });
+          firestoreBatchOps.push({ op: 'delete', docId: targetFsDocId });
         }
         continue;
       }
@@ -3053,6 +3179,7 @@ export async function repairAndAuditQuestionBank(
       // Step 1b: Strictly preserve Developer Edits (never overwrite!)
       const isDevEdited = Boolean(
         editedMap[docId] ||
+          (firestoreDocId && editedMap[firestoreDocId]) ||
           (innerId && editedMap[innerId]) ||
           raw.isManualDevEdit ||
           raw.isEdited ||
@@ -3061,12 +3188,15 @@ export async function repairAndAuditQuestionBank(
       );
 
       if (isDevEdited) {
-        const override = editedMap[docId] || (innerId ? editedMap[innerId] : null);
+        const override =
+          editedMap[docId] ||
+          (firestoreDocId ? editedMap[firestoreDocId] : null) ||
+          (innerId ? editedMap[innerId] : null);
         const preservedContent = {
           ...rawContent,
           ...(override || {}),
           id: innerId || docId,
-          questionDocId: docId,
+          questionDocId: targetFsDocId,
           taskType: tType,
           mode,
           level: normalizeDifficultyLabel(
@@ -3116,7 +3246,7 @@ export async function repairAndAuditQuestionBank(
       ) {
         corruptedPurged++;
         if (fromFirestore) {
-          firestoreBatchOps.push({ op: 'delete', docId });
+          firestoreBatchOps.push({ op: 'delete', docId: targetFsDocId });
         }
         continue;
       }
@@ -3132,7 +3262,7 @@ export async function repairAndAuditQuestionBank(
       const finalContent = {
         ...normalizedContent,
         id: innerId || docId,
-        questionDocId: docId,
+        questionDocId: targetFsDocId,
         taskType: tType,
         mode,
         level: validLevel,
@@ -3145,7 +3275,7 @@ export async function repairAndAuditQuestionBank(
       if (deletedSet.has(sig)) {
         corruptedPurged++;
         if (fromFirestore) {
-          firestoreBatchOps.push({ op: 'delete', docId });
+          firestoreBatchOps.push({ op: 'delete', docId: targetFsDocId });
         }
         continue;
       }
@@ -3162,7 +3292,7 @@ export async function repairAndAuditQuestionBank(
         .replace(/\s+/g, ' ');
       const titleKey = rawTitle.length >= 12 ? `${tType}::title::${rawTitle}` : '';
 
-      // Step 3b: Deduplicate by signature, ID, or normalized title
+      // Step 3b: Deduplicate by post-normalization signature, ID, or normalized title
       if (
         seenSigs.has(sig) ||
         seenIds.has(docId) ||
@@ -3171,7 +3301,7 @@ export async function repairAndAuditQuestionBank(
       ) {
         duplicatesRemoved++;
         if (fromFirestore) {
-          firestoreBatchOps.push({ op: 'delete', docId });
+          firestoreBatchOps.push({ op: 'delete', docId: targetFsDocId });
         }
         continue;
       }
@@ -3201,7 +3331,7 @@ export async function repairAndAuditQuestionBank(
         if (fromFirestore) {
           firestoreBatchOps.push({
             op: 'set',
-            docId,
+            docId: targetFsDocId,
             payload: {
               taskType: tType,
               level: validLevel,

@@ -192,28 +192,39 @@ export function getCompletedQuestionIds(): string[] {
   }
 }
 
-export function markQuestionCompleted(questionOrId: any): string[] {
+export function markQuestionCompleted(questionOrId: any, optionalTitle?: string): string[] {
   if (typeof window === 'undefined') return [];
   try {
     const current = new Set(getCompletedQuestionIds());
-    if (typeof questionOrId === 'string' && questionOrId.trim()) {
-      current.add(questionOrId.trim());
-      current.add(questionOrId.trim().toLowerCase());
+    const addCandidate = (val: any) => {
+      if (typeof val === 'string' && val.trim()) {
+        const trimmed = val.trim();
+        current.add(trimmed);
+        current.add(trimmed.toLowerCase());
+      }
+    };
+
+    if (typeof questionOrId === 'string') {
+      addCandidate(questionOrId);
     } else if (questionOrId && typeof questionOrId === 'object') {
       const candidates = [
         questionOrId.id,
         questionOrId.questionDocId,
+        questionOrId.data?.id,
         questionOrId.content?.id,
         questionOrId.title,
+        questionOrId.taskTitle,
+        questionOrId.data?.title,
         questionOrId.content?.title,
       ];
       for (const c of candidates) {
-        if (typeof c === 'string' && c.trim()) {
-          current.add(c.trim());
-          current.add(c.trim().toLowerCase());
-        }
+        addCandidate(c);
       }
     }
+    if (optionalTitle) {
+      addCandidate(optionalTitle);
+    }
+
     const updated = Array.from(current);
     localStorage.setItem(COMPLETED_QUESTIONS_KEY, JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent('toefl_completed_questions_updated'));
@@ -231,16 +242,25 @@ export function isQuestionCompleted(question: any, completedIds?: string[] | Set
       : new Set(Array.isArray(completedIds) ? completedIds : getCompletedQuestionIds());
   if (set.size === 0) return false;
 
+  if (typeof question === 'string') {
+    const trimmed = question.trim();
+    return Boolean(trimmed && (set.has(trimmed) || set.has(trimmed.toLowerCase())));
+  }
+
   const candidates = [
     question.id,
     question.questionDocId,
+    question.data?.id,
     question.content?.id,
     question.title,
+    question.taskTitle,
+    question.data?.title,
     question.content?.title,
   ];
   for (const c of candidates) {
     if (typeof c === 'string' && c.trim()) {
-      if (set.has(c.trim()) || set.has(c.trim().toLowerCase())) {
+      const trimmed = c.trim();
+      if (set.has(trimmed) || set.has(trimmed.toLowerCase())) {
         return true;
       }
     }
@@ -259,6 +279,17 @@ export async function savePracticeRecord(
     id: 'rec-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
     date: new Date().toISOString(),
   });
+
+  // Always mark the question as completed (by both ID and title) in both Exam and Coach modes
+  if (fullRecord.taskTitle || (record as any)?.questionId) {
+    markQuestionCompleted(
+      {
+        id: (record as any)?.questionId || (record as any)?.questionDocId,
+        title: fullRecord.taskTitle,
+      },
+      fullRecord.taskTitle
+    );
+  }
 
   // 1. Do NOT save Coach & Marathon Mode scores into official scoreHistory (`toefl_score_history`)
   const activeMode =
@@ -285,10 +316,6 @@ export async function savePracticeRecord(
     const trimmed = history.slice(0, 100);
     localStorage.setItem(getStorageKey(), JSON.stringify(trimmed));
     localStorage.setItem('toefl_score_history', JSON.stringify(trimmed));
-
-    if (fullRecord.taskTitle) {
-      markQuestionCompleted(fullRecord.taskTitle);
-    }
 
     if (auth.currentUser) {
       await saveTaskCompletion(fullRecord.taskType, fullRecord);

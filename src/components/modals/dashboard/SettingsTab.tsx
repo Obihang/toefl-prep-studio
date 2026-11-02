@@ -929,7 +929,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               </div>
             </div>
             <p className="text-[11px] text-slate-600">
-              All 8 TOEFL task types are deduplicated, synced, and cached in IndexedDB (<code className="font-mono text-teal-800">toefl_question_bank</code>) for 100% offline practice.
+              All 12 official 2026 TOEFL iBT® task types are deduplicated, synced, and cached in IndexedDB (<code className="font-mono text-teal-800">toefl_question_bank</code>) for 100% offline practice.
             </p>
           </div>
 
