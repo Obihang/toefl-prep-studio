@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
-import { resolveModelChains } from './modelRoles';
+import { resolveModelChains, getModelsForRole } from './modelRoles';
 import * as CURATED from '../data/curatedQuestions';
 import { ACADEMIC_GLOSSARY } from '../utils/academicGlossary';
 import { generateWithFallback } from './geminiUtils';
@@ -1310,22 +1310,53 @@ Return JSON format: {"title": "Academic Discussion Board", "professorName": "Pro
         clearProviderCooldown(candidate.provider);
         return { ...result, isFallback: false, modelUsed, providerUsed: candidate.provider };
       } else {
-        const { text, modelUsed } = await callChatWithHealing({
-          provider: candidate.provider,
-          apiKey: candidate.apiKey,
-          baseUrl: candidate.baseUrl,
-          model: candidate.model,
-          purpose: 'generation',
-          prompt: fullPrompt,
-          systemInstruction,
-          responseJson: true,
-        });
+        let modelsToTry = getModelsForRole('generator', candidate.provider);
+        const explicitModel = (candidate.model || optsObj.model || '').trim();
+        const isValidExplicitForProvider =
+          explicitModel &&
+          explicitModel !== 'Auto-Routed by Purpose' &&
+          explicitModel !== 'Auto-Optimized' &&
+          !/^gemini-/i.test(explicitModel) &&
+          (modelsToTry.includes(explicitModel) ||
+            (candidate.provider === 'openrouter' && explicitModel.endsWith(':free')) ||
+            (candidate.provider === 'nvidia' && explicitModel.includes('/')) ||
+            (candidate.provider === 'groq' && !explicitModel.startsWith('meta/') && !explicitModel.endsWith(':free')));
 
-        const parsed = cleanAndExtractJson(text);
-        const normalized = normalizeTask(taskType, { ...parsed, coachMode: isCoachMode });
-        const result = schema.parse(normalized);
-        clearProviderCooldown(candidate.provider);
-        return { ...result, isFallback: false, modelUsed, providerUsed: candidate.provider };
+        if (isValidExplicitForProvider && modelsToTry[0] !== explicitModel) {
+          modelsToTry = [explicitModel, ...modelsToTry.filter((m) => m !== explicitModel)];
+        }
+        if (modelsToTry.length === 0) {
+          modelsToTry = [explicitModel || 'llama-3.3-70b-versatile'];
+        }
+
+        let providerModelErr: any = null;
+        for (const modelToUse of modelsToTry) {
+          try {
+            const { text, modelUsed } = await callChatWithHealing({
+              provider: candidate.provider,
+              apiKey: candidate.apiKey,
+              baseUrl: candidate.baseUrl,
+              model: modelToUse,
+              purpose: 'generation',
+              prompt: fullPrompt,
+              systemInstruction,
+              responseJson: true,
+            });
+
+            const parsed = cleanAndExtractJson(text);
+            const normalized = normalizeTask(taskType, { ...parsed, coachMode: isCoachMode });
+            const result = schema.parse(normalized);
+            clearProviderCooldown(candidate.provider);
+            return { ...result, isFallback: false, modelUsed, providerUsed: candidate.provider };
+          } catch (mErr: any) {
+            providerModelErr = mErr;
+            const status = getStatus(mErr);
+            if (status === 401 || status === 403 || isKeyError(mErr)) {
+              throw mErr;
+            }
+          }
+        }
+        throw providerModelErr || new Error(`All models failed for provider ${candidate.provider}`);
       }
     } catch (candidateErr: any) {
       lastError = candidateErr;

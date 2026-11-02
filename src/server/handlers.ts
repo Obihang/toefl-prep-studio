@@ -287,12 +287,29 @@ export async function handleTestKeyEndpoint(req: Req, res: Res) {
 
 export async function handleGenerateTaskEndpoint(req: Req, res: Res) {
   try {
-    const config = getApiConfig(req.headers, req.body);
-    const groqKey = (req.headers['x-groq-key'] as string) || (config.provider === 'groq' ? config.apiKey : '') || process.env.GROQ_API_KEY || '';
+    const config = getApiConfig(req.headers, req.body) as any;
+    const isStrict = Boolean(config.strictProvider || req.body?.strictProvider);
+    const groqKey =
+      isStrict && config.provider !== 'groq'
+        ? ''
+        : (req.headers['x-groq-key'] as string) ||
+          (config.provider === 'groq' ? config.apiKey : '') ||
+          process.env.GROQ_API_KEY ||
+          '';
     const { taskType, level, topic, promptData, coachMode } = req.body || {};
-    const mergedConfig = { ...config, groqKey, coachMode: Boolean(coachMode || promptData?.coachMode) };
+    const mergedConfig = {
+      ...config,
+      ...(groqKey ? { groqKey } : {}),
+      strictProvider: isStrict,
+      coachMode: Boolean(coachMode || promptData?.coachMode),
+    };
     const result = await handleGenerateTask(taskType, level, topic, mergedConfig, promptData);
-    return res.status(200).json({ success: true, data: result });
+    const providerUsed = (result as any)?.providerUsed || config.provider;
+    return res.status(200).json({
+      success: true,
+      providerUsed,
+      data: { ...result, providerUsed },
+    });
   } catch (error: any) {
     console.error('Generate task error:', redactSensitiveInfo(error));
     const status = getStatus(error) || 500;
@@ -302,12 +319,28 @@ export async function handleGenerateTaskEndpoint(req: Req, res: Res) {
 
 export async function handleEvaluateResponseEndpoint(req: Req, res: Res) {
   try {
-    const config = getApiConfig(req.headers, req.body);
-    const groqKey = (req.headers['x-groq-key'] as string) || (config.provider === 'groq' ? config.apiKey : '') || process.env.GROQ_API_KEY || '';
-    const mergedConfig = { ...config, groqKey };
+    const config = getApiConfig(req.headers, req.body) as any;
+    const isStrict = Boolean(config.strictProvider || req.body?.strictProvider);
+    const groqKey =
+      isStrict && config.provider !== 'groq'
+        ? ''
+        : (req.headers['x-groq-key'] as string) ||
+          (config.provider === 'groq' ? config.apiKey : '') ||
+          process.env.GROQ_API_KEY ||
+          '';
+    const mergedConfig = {
+      ...config,
+      ...(groqKey ? { groqKey } : {}),
+      strictProvider: isStrict,
+    };
     const { taskType, promptData, studentResponse } = req.body || {};
     const result = await handleEvaluateResponse(taskType, promptData, studentResponse, mergedConfig);
-    return res.status(200).json({ success: true, data: result });
+    const providerUsed = (result as any)?.providerUsed || config.provider;
+    return res.status(200).json({
+      success: true,
+      providerUsed,
+      data: { ...result, providerUsed },
+    });
   } catch (error: any) {
     console.error('Evaluate response error:', redactSensitiveInfo(error));
     const status = getStatus(error) || 500;

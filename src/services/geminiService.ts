@@ -325,6 +325,9 @@ export async function executeWithFallback<T>(
             cooldownUntil[provider] = Date.now() + 10 * 60_000;
             break;
           } else if (err?.providerChainExhausted) {
+            if (!cooldownUntil[provider] || cooldownUntil[provider] <= Date.now()) {
+              cooldownUntil[provider] = Date.now() + 30_000;
+            }
             break;
           }
         }
@@ -367,6 +370,8 @@ function buildSingleProviderHeaders(provider: string, apiKey: string): Record<st
     'x-api-provider': provider,
     'x-api-key': apiKey,
   };
+  delete headers['x-api-model'];
+  delete headers['x-api-base-url'];
   for (const p of PROVIDER_ORDER) {
     delete headers[`x-api-key-${p}`];
   }

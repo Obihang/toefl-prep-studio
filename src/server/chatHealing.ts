@@ -4,15 +4,24 @@ import { resolveModelChains, isModelGone, markModelDead } from './modelRoles';
 
 const FALLBACK_MODELS_BY_PROVIDER: Record<string, string[]> = {
   openrouter: [
+    'meta-llama/llama-3.3-70b-instruct:free',
+    'google/gemini-2.0-flash-exp:free',
+    'deepseek/deepseek-chat:free',
+    'qwen/qwen-2.5-72b-instruct:free',
     'meta-llama/llama-3.1-8b-instruct:free',
-    'mistralai/mistral-7b-instruct:free',
   ],
   groq: [
-    'openai/gpt-oss-20b',
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
     'openai/gpt-oss-120b',
+    'openai/gpt-oss-20b',
   ],
   nvidia: [
+    'meta/llama-3.3-70b-instruct',
+    'meta/llama-3.1-70b-instruct',
     'meta/llama-3.1-8b-instruct',
+    'qwen/qwen2.5-72b-instruct',
+    'nvidia/llama-3.1-nemotron-70b-instruct',
   ],
 };
 
@@ -46,10 +55,10 @@ export async function callChatWithHealing(
 
     const defaultModel =
       provider === 'openrouter'
-        ? 'meta-llama/llama-3.1-8b-instruct:free'
+        ? 'meta-llama/llama-3.3-70b-instruct:free'
         : provider === 'groq'
-        ? 'openai/gpt-oss-20b'
-        : 'meta/llama-3.1-8b-instruct';
+        ? 'llama-3.3-70b-versatile'
+        : 'meta/llama-3.3-70b-instruct';
     const attemptedModel = options.model || defaultModel;
 
     if (isGone) {

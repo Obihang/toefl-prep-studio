@@ -101,8 +101,14 @@ export function getApiConfig(headers: any = {}, body: any = {}): ApiConfig {
     baseUrl = '';
   }
 
-  // Model resolution
-  const model = (getHeader(headers, 'x-api-model') || b.model || '').trim();
+  // Model resolution (ignore gemini-* model headers when target provider is non-gemini)
+  const rawModel = (b.model || getHeader(headers, 'x-api-model') || '').trim();
+  const isMismatchedGeminiModel =
+    provider !== 'gemini' &&
+    provider !== 'auto' &&
+    /^gemini-/i.test(rawModel) &&
+    !rawModel.endsWith(':free');
+  const model = isMismatchedGeminiModel ? '' : rawModel;
   const sttModel = (getHeader(headers, 'x-api-model-stt') || b.sttModel || '').trim();
   const ttsModel = (getHeader(headers, 'x-api-model-tts') || b.ttsModel || '').trim();
 
@@ -115,10 +121,10 @@ export function getApiConfig(headers: any = {}, body: any = {}): ApiConfig {
     const KNOWN_ROUTED = ['gemini', 'groq', 'openai', 'anthropic', 'openrouter', 'nvidia', 'deepseek', 'xai'];
     for (const p of KNOWN_ROUTED) {
       const k =
-        getHeader(headers, `x-api-key-${p}`) ||
-        (b.availableKeys && b.availableKeys[p]) ||
         (b.providerKeys && b.providerKeys[p]) ||
-        (b.options?.providerKeys && b.options.providerKeys[p]);
+        (b.availableKeys && b.availableKeys[p]) ||
+        (b.options?.providerKeys && b.options.providerKeys[p]) ||
+        getHeader(headers, `x-api-key-${p}`);
       if (k && typeof k === 'string' && k.trim()) {
         availableKeys[p] = k.trim();
       }
@@ -150,5 +156,7 @@ export function getApiConfig(headers: any = {}, body: any = {}): ApiConfig {
     audio8Url,
     prompt,
     availableKeys,
-  };
+    providerKeys: availableKeys,
+    strictProvider,
+  } as ApiConfig & { providerKeys?: Record<string, string>; strictProvider?: boolean };
 }

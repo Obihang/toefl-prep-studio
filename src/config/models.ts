@@ -15,10 +15,27 @@ export type ModelProvider =
   | 'anthropic';
 
 export const GENERATION_MODELS: Record<ModelProvider, string[]> = {
-  gemini: [], // discovered dynamically via /models endpoint
-  groq: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
-  nvidia: ['meta/llama-3.3-70b-instruct'],
-  openrouter: ['meta-llama/llama-3.3-70b-instruct:free'],
+  gemini: ['gemini-2.5-flash', 'gemini-2.0-flash'], // also discovered dynamically via /models endpoint
+  groq: [
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'openai/gpt-oss-120b',
+    'openai/gpt-oss-20b',
+  ],
+  nvidia: [
+    'meta/llama-3.3-70b-instruct',
+    'meta/llama-3.1-70b-instruct',
+    'meta/llama-3.1-8b-instruct',
+    'qwen/qwen2.5-72b-instruct',
+    'nvidia/llama-3.1-nemotron-70b-instruct',
+  ],
+  openrouter: [
+    'meta-llama/llama-3.3-70b-instruct:free',
+    'google/gemini-2.0-flash-exp:free',
+    'deepseek/deepseek-chat:free',
+    'qwen/qwen-2.5-72b-instruct:free',
+    'meta-llama/llama-3.1-8b-instruct:free',
+  ],
   openai: ['gpt-4o-mini', 'gpt-4o'],
   deepseek: ['deepseek-chat'],
   xai: ['grok-2-latest'],
@@ -26,10 +43,22 @@ export const GENERATION_MODELS: Record<ModelProvider, string[]> = {
 };
 
 export const EVALUATION_MODELS: Record<ModelProvider, string[]> = {
-  gemini: [], // discovered dynamically via /models endpoint
-  groq: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b'],
-  nvidia: ['meta/llama-3.3-70b-instruct'],
-  openrouter: ['meta-llama/llama-3.3-70b-instruct:free'],
+  gemini: ['gemini-2.5-flash', 'gemini-2.0-flash'], // also discovered dynamically via /models endpoint
+  groq: [
+    'llama-3.3-70b-versatile',
+    'openai/gpt-oss-120b',
+    'llama-3.1-8b-instant',
+  ],
+  nvidia: [
+    'meta/llama-3.3-70b-instruct',
+    'nvidia/llama-3.1-nemotron-70b-instruct',
+    'meta/llama-3.1-70b-instruct',
+  ],
+  openrouter: [
+    'meta-llama/llama-3.3-70b-instruct:free',
+    'deepseek/deepseek-chat:free',
+    'google/gemini-2.0-flash-exp:free',
+  ],
   openai: ['gpt-4o-mini', 'gpt-4o'],
   deepseek: ['deepseek-chat'],
   xai: ['grok-2-latest'],

@@ -155,66 +155,134 @@ function scoreGeminiModel(id: string, role: 'generation' | 'evaluation'): number
   return -10000;
 }
 
-/**
- * Scoring for non-Gemini models (NVIDIA, OpenRouter, Groq, etc.):
- * Rank by known good families in order:
- * 1. gpt-oss
- * 2. llama (3.3, 4, 3.1)
- * 3. qwen
- * 4. deepseek
- * 5. nemotron
- * 6. mistral
- * 7. gemma
- * Unknown families (e.g. jamba) go last (used only if nothing else is available).
- */
-function scoreNonGeminiModel(id: string, role: 'generation' | 'evaluation'): number {
+export const MODEL_ROLES: Record<
+  string,
+  {
+    generator: string[];
+    evaluator: string[];
+  }
+> = {
+  gemini: {
+    generator: ['gemini-2.5-flash', 'gemini-2.0-flash'],
+    evaluator: ['gemini-2.5-flash', 'gemini-2.0-flash'],
+  },
+  groq: {
+    generator: [
+      'llama-3.3-70b-versatile',
+      'llama-3.1-8b-instant',
+      'openai/gpt-oss-120b',
+      'openai/gpt-oss-20b',
+    ],
+    evaluator: [
+      'llama-3.3-70b-versatile',
+      'openai/gpt-oss-120b',
+      'llama-3.1-8b-instant',
+    ],
+  },
+  nvidia: {
+    generator: [
+      'meta/llama-3.3-70b-instruct',
+      'meta/llama-3.1-70b-instruct',
+      'meta/llama-3.1-8b-instruct',
+      'qwen/qwen2.5-72b-instruct',
+      'nvidia/llama-3.1-nemotron-70b-instruct',
+    ],
+    evaluator: [
+      'meta/llama-3.3-70b-instruct',
+      'nvidia/llama-3.1-nemotron-70b-instruct',
+      'meta/llama-3.1-70b-instruct',
+    ],
+  },
+  openrouter: {
+    generator: [
+      'meta-llama/llama-3.3-70b-instruct:free',
+      'google/gemini-2.0-flash-exp:free',
+      'deepseek/deepseek-chat:free',
+      'qwen/qwen-2.5-72b-instruct:free',
+      'meta-llama/llama-3.1-8b-instruct:free',
+    ],
+    evaluator: [
+      'meta-llama/llama-3.3-70b-instruct:free',
+      'deepseek/deepseek-chat:free',
+      'google/gemini-2.0-flash-exp:free',
+    ],
+  },
+  openai: {
+    generator: GENERATION_MODELS.openai,
+    evaluator: EVALUATION_MODELS.openai,
+  },
+  deepseek: {
+    generator: GENERATION_MODELS.deepseek,
+    evaluator: EVALUATION_MODELS.deepseek,
+  },
+  xai: {
+    generator: GENERATION_MODELS.xai,
+    evaluator: EVALUATION_MODELS.xai,
+  },
+  anthropic: {
+    generator: GENERATION_MODELS.anthropic,
+    evaluator: EVALUATION_MODELS.anthropic,
+  },
+};
+
+function scoreNonGeminiModel(id: string, role: 'generation' | 'evaluation', provider: string = ''): number {
   const lower = id.toLowerCase();
+  const p = provider.toLowerCase();
+
+  // Prioritize verified production models in MODEL_ROLES in their exact configured order
+  const configuredRoleList =
+    role === 'generation' ? MODEL_ROLES[p]?.generator : MODEL_ROLES[p]?.evaluator;
+  if (configuredRoleList) {
+    const exactIdx = configuredRoleList.findIndex((m) => m.toLowerCase() === lower);
+    if (exactIdx !== -1) {
+      return 100000 - exactIdx * 1000;
+    }
+  }
+
   let familyScore = 0;
 
-  if (/gpt-oss/i.test(lower)) {
+  if (/llama/i.test(lower) && !/nemotron/i.test(lower)) {
     familyScore = 70000;
-  } else if (/llama/i.test(lower) && !/nemotron/i.test(lower)) {
-    familyScore = 60000;
-    // Llama version order: 3.3, 4, 3.1, 3.2
+    // Llama version order: 3.3, 3.1, 4, 3.2
     if (/llama-?3\.3/i.test(lower)) {
-      familyScore += 4000;
-    } else if (/llama-?4/i.test(lower)) {
-      familyScore += 3000;
+      familyScore += 5000;
     } else if (/llama-?3\.1/i.test(lower)) {
+      familyScore += 3000;
+    } else if (/llama-?4/i.test(lower)) {
       familyScore += 2000;
     } else if (/llama-?3\.2/i.test(lower)) {
       familyScore += 1000;
     }
+  } else if (/gpt-oss/i.test(lower)) {
+    familyScore = 60000;
   } else if (/qwen/i.test(lower)) {
     familyScore = 50000;
-    if (/qwen-?3(?:\.6)?/i.test(lower)) familyScore += 2000;
-    else if (/qwen-?2\.5/i.test(lower)) familyScore += 1000;
+    if (/qwen-?2\.5/i.test(lower)) familyScore += 2000;
+    else if (/qwen-?3(?:\.6)?/i.test(lower)) familyScore += 1000;
   } else if (/deepseek/i.test(lower)) {
     familyScore = 40000;
     if (REASONING_PATTERN.test(lower)) {
       familyScore -= 10000; // Reasoning models rank last among chat models
     }
   } else if (/nemotron/i.test(lower)) {
-    familyScore = 30000;
+    familyScore = 35000;
   } else if (/mistral|mixtral/i.test(lower)) {
     familyScore = 20000;
   } else if (/gemma/i.test(lower)) {
     familyScore = 10000;
   } else {
-    // Unknown families (e.g. jamba) go last
     familyScore = 1000;
   }
 
-  // Role adjustments within family
   if (role === 'generation') {
-    // Generation prefers cheapest/fastest family: 8b, 20b, mini, small, 3b, 7b
-    if (/8b|20b|mini|small|3b|7b/i.test(lower)) {
-      familyScore += 500;
+    if (/70b-versatile|70b-instruct/i.test(lower)) {
+      familyScore += 600;
+    } else if (/8b|20b|mini|small|3b|7b/i.test(lower)) {
+      familyScore += 400;
     } else if (/70b|120b|large/i.test(lower)) {
-      familyScore += 100;
+      familyScore += 200;
     }
   } else {
-    // Evaluation prefers strongest available: 120b, 70b, 72b, large, pro
     if (/120b|70b|72b|large|pro/i.test(lower)) {
       familyScore += 500;
     } else if (/8b|20b|mini|small|3b|7b/i.test(lower)) {
@@ -246,7 +314,7 @@ export function scoreModelForRole(id: string, role: 'generation' | 'evaluation',
     return scoreGeminiModel(id, role);
   }
 
-  return scoreNonGeminiModel(id, role);
+  return scoreNonGeminiModel(id, role, p);
 }
 
 export function rankModelsForRole(
@@ -485,7 +553,13 @@ export async function resolveModelChains(
   }
 
   const sttTtsSet = new Set([...sttCandidates, ...ttsCandidates]);
-  const chatCandidateIds = p === 'gemini' ? all : all.filter((id) => !sttTtsSet.has(id));
+  const verifiedRoleModels = MODEL_ROLES[p]
+    ? Array.from(new Set([...MODEL_ROLES[p].generator, ...MODEL_ROLES[p].evaluator]))
+    : [];
+  const chatCandidateIds =
+    p === 'gemini'
+      ? all
+      : Array.from(new Set([...verifiedRoleModels, ...all.filter((id) => !sttTtsSet.has(id))]));
 
   let genRanked = rankModelsForRole(p, chatCandidateIds, 'generation');
   let evalRanked = rankModelsForRole(p, chatCandidateIds, 'evaluation');
@@ -526,15 +600,24 @@ export function getModelsForRole(
   const normalizedRole = isGen ? 'generation' : 'evaluation';
   const p = (provider || 'gemini').toLowerCase() as keyof typeof GENERATION_MODELS;
 
+  const roleConfig = MODEL_ROLES[p];
+  const baseVerified = roleConfig
+    ? isGen
+      ? roleConfig.generator
+      : roleConfig.evaluator
+    : isGen
+    ? GENERATION_MODELS[p] || []
+    : EVALUATION_MODELS[p] || [];
+
   if (dynamicModels && dynamicModels.length > 0) {
-    const ranked = rankModelsForRole(p, dynamicModels, normalizedRole);
+    const merged = p === 'gemini' ? dynamicModels : Array.from(new Set([...baseVerified, ...dynamicModels]));
+    const ranked = rankModelsForRole(p, merged, normalizedRole);
     if (ranked.length > 0) return ranked;
   }
 
   switch (p) {
     case 'gemini': {
-      const configured = isGen ? GENERATION_MODELS.gemini : EVALUATION_MODELS.gemini;
-      const list = configured && configured.length > 0 ? configured : ['gemini-2.5-flash', 'gemini-2.0-flash'];
+      const list = baseVerified && baseVerified.length > 0 ? baseVerified : ['gemini-2.5-flash', 'gemini-2.0-flash'];
       return list.filter((m) => !isModelDead(m));
     }
     case 'groq':
@@ -544,14 +627,10 @@ export function getModelsForRole(
     case 'deepseek':
     case 'xai':
     case 'anthropic': {
-      const configured = isGen ? GENERATION_MODELS[p] : EVALUATION_MODELS[p];
-      return (configured || []).filter((m) => !isModelDead(m));
+      return (baseVerified || []).filter((m) => !isModelDead(m));
     }
     default: {
-      const fallback = isGen
-        ? (GENERATION_MODELS as Record<string, string[]>)[p]
-        : (EVALUATION_MODELS as Record<string, string[]>)[p];
-      return (fallback || []).filter((m: string) => !isModelDead(m));
+      return (baseVerified || []).filter((m: string) => !isModelDead(m));
     }
   }
 }

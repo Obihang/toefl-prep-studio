@@ -65,6 +65,39 @@ export function collectAvailableProviders(options?: ApiCallOptions): ProviderCan
   const opts = typeof options === 'string' ? { apiKey: options } : options || {};
   const map: Map<string, string> = new Map();
 
+  // Check if client explicitly requested a single target provider (strictProvider or single-entry providerKeys)
+  const explicitProvider = (opts.provider || '').trim().toLowerCase();
+  const passedProviderKeys = (opts as any).providerKeys || (opts as any).availableKeys || {};
+  const passedKeysEntries = Object.entries(passedProviderKeys).filter(
+    ([_, v]) => typeof v === 'string' && v.trim().length > 0
+  );
+  const isStrictSingleProvider =
+    Boolean((opts as any).strictProvider) ||
+    (explicitProvider &&
+      explicitProvider !== 'auto' &&
+      passedKeysEntries.length === 1 &&
+      passedKeysEntries[0][0].toLowerCase() === explicitProvider);
+
+  if (isStrictSingleProvider && explicitProvider && explicitProvider !== 'auto') {
+    const singleKey = (
+      opts.apiKey ||
+      (opts as any).customApiKey ||
+      passedProviderKeys[explicitProvider] ||
+      ''
+    ).trim();
+    if (singleKey) {
+      return [
+        {
+          provider: explicitProvider,
+          apiKey: singleKey,
+          baseUrl: (opts as any).baseUrl,
+          model: (opts as any).model,
+          isPrimary: true,
+        },
+      ];
+    }
+  }
+
   // 1. Available keys dictionary from headers / config
   const availableKeys = { ...((opts as any).providerKeys || {}), ...((opts as any).availableKeys || {}) };
   for (const [p, k] of Object.entries(availableKeys)) {
@@ -104,8 +137,11 @@ export function collectAvailableProviders(options?: ApiCallOptions): ProviderCan
     }
   }
 
-  // 4. Server environment variables
-  if (process.env.ALLOW_SERVER_ENV_KEYS === 'true' || process.env.NODE_ENV !== 'production') {
+  // 4. Server environment variables (only when client did not pass any explicit BYOK keys)
+  if (
+    map.size === 0 &&
+    (process.env.ALLOW_SERVER_ENV_KEYS === 'true' || process.env.NODE_ENV !== 'production')
+  ) {
     if (!map.has('gemini') && process.env.GEMINI_API_KEY) {
       map.set('gemini', process.env.GEMINI_API_KEY.trim());
     }

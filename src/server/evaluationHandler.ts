@@ -41,31 +41,46 @@ function resolveAvailableKeys(options: any): Partial<Record<AIProvider, string>>
   const keys: Partial<Record<AIProvider, string>> = {};
   const pk = options?.providerKeys || options?.availableKeys || {};
   const headers = options?.headers || {};
+  const explicitProv = String(options?.provider || '').trim().toLowerCase() as AIProvider;
+  const pkEntries = Object.entries(pk).filter(([_, v]) => typeof v === 'string' && v.trim().length > 0);
+  const isStrict =
+    Boolean(options?.strictProvider) ||
+    (explicitProv && pkEntries.length === 1 && pkEntries[0][0].toLowerCase() === explicitProv);
+
+  if (isStrict && explicitProv) {
+    const singleKey = String(
+      options?.apiKey || options?.customApiKey || pk[explicitProv] || ''
+    ).trim();
+    if (singleKey) {
+      keys[explicitProv] = singleKey;
+      return keys;
+    }
+  }
 
   const gemini =
     pk.gemini ||
     headers['x-gemini-key'] ||
     (options?.provider === 'gemini' ? options?.apiKey || options?.customApiKey : '') ||
-    process.env.GEMINI_API_KEY ||
+    (pkEntries.length === 0 ? process.env.GEMINI_API_KEY : '') ||
     '';
   const groq =
     pk.groq ||
     options?.groqKey ||
     headers['x-groq-key'] ||
     (options?.provider === 'groq' ? options?.apiKey || options?.customApiKey : '') ||
-    process.env.GROQ_API_KEY ||
+    (pkEntries.length === 0 ? process.env.GROQ_API_KEY : '') ||
     '';
   const openrouter =
     pk.openrouter ||
     headers['x-openrouter-key'] ||
     (options?.provider === 'openrouter' ? options?.apiKey || options?.customApiKey : '') ||
-    process.env.OPENROUTER_API_KEY ||
+    (pkEntries.length === 0 ? process.env.OPENROUTER_API_KEY : '') ||
     '';
   const nvidia =
     pk.nvidia ||
     headers['x-nvidia-key'] ||
     (options?.provider === 'nvidia' ? options?.apiKey || options?.customApiKey : '') ||
-    process.env.NVIDIA_API_KEY ||
+    (pkEntries.length === 0 ? process.env.NVIDIA_API_KEY : '') ||
     '';
 
   if (gemini && String(gemini).trim()) keys.gemini = String(gemini).trim();
@@ -90,10 +105,22 @@ function buildFallbackChain(
   keys: Partial<Record<AIProvider, string>>
 ): FallbackStep[] {
   const modelsByProvider: Record<AIProvider, string[]> = {
-    gemini: ['gemini-2.5-flash', 'gemini-3-flash-preview'],
-    groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
-    openrouter: ['meta-llama/llama-3.3-70b-instruct:free', 'google/gemini-2.0-flash-exp:free'],
-    nvidia: ['meta/llama-3.1-70b-instruct'],
+    gemini: ['gemini-2.5-flash', 'gemini-2.0-flash'],
+    groq: [
+      'llama-3.3-70b-versatile',
+      'openai/gpt-oss-120b',
+      'llama-3.1-8b-instant',
+    ],
+    openrouter: [
+      'meta-llama/llama-3.3-70b-instruct:free',
+      'deepseek/deepseek-chat:free',
+      'google/gemini-2.0-flash-exp:free',
+    ],
+    nvidia: [
+      'meta/llama-3.3-70b-instruct',
+      'nvidia/llama-3.1-nemotron-70b-instruct',
+      'meta/llama-3.1-70b-instruct',
+    ],
   };
 
   const order: AIProvider[] = ['gemini', 'groq', 'openrouter', 'nvidia'];
