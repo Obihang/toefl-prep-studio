@@ -7,6 +7,8 @@ import {
   BookOpen,
   AlertCircle,
   Terminal,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { OverviewTab } from './dashboard/OverviewTab';
 import { GoalsTab } from './dashboard/GoalsTab';
@@ -69,6 +71,7 @@ export const DashboardModal: React.FC<Props> = ({
     const saved = localStorage.getItem('toefl_shortcuts_enabled');
     return saved === null ? true : saved !== 'false';
   });
+  const [isShortcutsAccordionOpen, setIsShortcutsAccordionOpen] = useState<boolean>(false);
 
   const handleToggleShortcutsEnabled = (nextVal: boolean) => {
     setShortcutsEnabled(nextVal);
@@ -558,101 +561,117 @@ export const DashboardModal: React.FC<Props> = ({
             />
           )}
           {activeTab === 'settings' && (
-            <div className="space-y-4">
-              {/* ⌨️ Keyboard Shortcuts & Navigation Hotkeys Card */}
-              <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3.5">
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <span>⌨️ Keyboard Shortcuts &amp; Navigation Hotkeys</span>
-                      <span
-                        className={`px-2 py-0.5 text-[10px] font-bold rounded-full ${
-                          shortcutsEnabled
-                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                            : 'bg-slate-100 text-slate-600 border border-slate-200'
+            <div className="space-y-3">
+              {/* ⌨️ Keyboard Shortcuts & Navigation Hotkeys Collapsible Accordion Card */}
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden transition-all shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setIsShortcutsAccordionOpen((prev) => !prev)}
+                  className="w-full p-4 text-left font-bold text-sm text-slate-900 flex items-center justify-between cursor-pointer hover:bg-slate-50/60 transition-colors"
+                >
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <span>⌨️ Keyboard Shortcuts &amp; Navigation Hotkeys</span>
+                    <span
+                      className={`px-2 py-0.5 text-[10px] font-bold rounded-full ${
+                        shortcutsEnabled
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                          : 'bg-slate-100 text-slate-600 border border-slate-200'
+                      }`}
+                    >
+                      {shortcutsEnabled ? 'ACTIVE' : 'DISABLED'}
+                    </span>
+                  </div>
+                  {isShortcutsAccordionOpen ? (
+                    <ChevronUp className="w-4 h-4 text-slate-500 shrink-0" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4 text-slate-500 shrink-0" />
+                  )}
+                </button>
+
+                {isShortcutsAccordionOpen && (
+                  <div className="px-4 pb-4 pt-1 border-t border-slate-100 animate-in fade-in duration-200">
+                    <div className="space-y-4 pt-2">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/80 border border-slate-200/80 rounded-xl p-3">
+                        <p className="text-xs text-slate-600">
+                          All letter and number shortcuts require modifier keys (<code className="font-mono text-slate-800 font-semibold">Alt</code> / <code className="font-mono text-slate-800 font-semibold">Ctrl</code>) so typing in essays, emails, and word blanks is never interrupted.
+                        </p>
+
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={shortcutsEnabled}
+                          onClick={() => handleToggleShortcutsEnabled(!shortcutsEnabled)}
+                          className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer shrink-0 ${
+                            shortcutsEnabled
+                              ? 'bg-teal-800 hover:bg-teal-900 text-white shadow-2xs'
+                              : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300'
+                          }`}
+                        >
+                          <span>Enable Keyboard Shortcuts: {shortcutsEnabled ? 'ON' : 'OFF'}</span>
+                        </button>
+                      </div>
+
+                      <div
+                        className={`grid grid-cols-1 md:grid-cols-2 gap-2.5 transition-opacity ${
+                          shortcutsEnabled ? 'opacity-100' : 'opacity-50'
                         }`}
                       >
-                        {shortcutsEnabled ? 'ACTIVE' : 'DISABLED'}
-                      </span>
-                    </h4>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      All letter and number shortcuts require modifier keys (<code className="font-mono text-slate-700">Alt</code> / <code className="font-mono text-slate-700">Ctrl</code>) so typing in essays, emails, and word blanks is never interrupted.
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={shortcutsEnabled}
-                    onClick={() => handleToggleShortcutsEnabled(!shortcutsEnabled)}
-                    className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer shrink-0 ${
-                      shortcutsEnabled
-                        ? 'bg-teal-800 hover:bg-teal-900 text-white shadow-2xs'
-                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300'
-                    }`}
-                  >
-                    <span>Enable Keyboard Shortcuts: {shortcutsEnabled ? 'ON' : 'OFF'}</span>
-                  </button>
-                </div>
-
-                <div
-                  className={`grid grid-cols-1 md:grid-cols-2 gap-2.5 transition-opacity ${
-                    shortcutsEnabled ? 'opacity-100' : 'opacity-50'
-                  }`}
-                >
-                  {[
-                    {
-                      keys: 'Ctrl + Enter / Cmd + Enter',
-                      action: 'Submit / Check Answers / Evaluate Response',
-                    },
-                    {
-                      keys: 'Enter',
-                      action: 'Next word blank (Complete the Words), Next Item (MCQ sets), or Stop Recording & Transcribe (Speaking)',
-                    },
-                    {
-                      keys: 'Tab / Alt + H',
-                      action: 'Trigger Coach Hint (+1 Letter, Place Next Tile, or toggle Coach Hint & Strategy)',
-                    },
-                    {
-                      keys: 'Alt + N / Ctrl + Shift + N',
-                      action: 'Next Question (loads next random unsolved question)',
-                    },
-                    {
-                      keys: 'Alt + G / Ctrl + Shift + G',
-                      action: 'Generate New Question with AI',
-                    },
-                    {
-                      keys: 'Alt + R / Ctrl + Shift + R',
-                      action: 'Retry / Reset Current Question',
-                    },
-                    {
-                      keys: 'Alt + M',
-                      action: 'Toggle Mode between Official Exam Mode and Coach & Marathon Mode',
-                    },
-                    {
-                      keys: 'Alt + 1–4 / Alt + A–D',
-                      action: 'Select Multiple-Choice Option A (1), B (2), C (3), or D (4)',
-                    },
-                    {
-                      keys: 'Alt + P / Ctrl + Space',
-                      action: 'Play / Replay Audio in Listening and Speaking',
-                    },
-                    {
-                      keys: 'Alt + S',
-                      action: 'Show / Hide Script or Questions in Listening and Speaking',
-                    },
-                  ].map((item) => (
-                    <div
-                      key={item.keys}
-                      className="flex items-start justify-between gap-3 p-2.5 rounded-lg bg-slate-50 border border-slate-200/80 text-xs"
-                    >
-                      <span className="text-slate-700 font-medium leading-snug">{item.action}</span>
-                      <kbd className="px-2 py-1 bg-white border border-slate-300 rounded-md text-[11px] font-mono font-bold text-teal-900 shadow-2xs whitespace-nowrap shrink-0">
-                        {item.keys}
-                      </kbd>
+                        {[
+                          {
+                            keys: 'Ctrl + Enter / Cmd + Enter',
+                            action: 'Submit / Check Answers / Evaluate Response',
+                          },
+                          {
+                            keys: 'Enter',
+                            action: 'Next word blank (Complete the Words), Next Item (MCQ sets), or Stop Recording & Transcribe (Speaking)',
+                          },
+                          {
+                            keys: 'Tab / Alt + H',
+                            action: 'Trigger Coach Hint (+1 Letter, Place Next Tile, or toggle Coach Hint & Strategy)',
+                          },
+                          {
+                            keys: 'Alt + N / Ctrl + Shift + N',
+                            action: 'Next Question (loads next random unsolved question)',
+                          },
+                          {
+                            keys: 'Alt + G / Ctrl + Shift + G',
+                            action: 'Generate New Question with AI',
+                          },
+                          {
+                            keys: 'Alt + R / Ctrl + Shift + R',
+                            action: 'Retry / Reset Current Question',
+                          },
+                          {
+                            keys: 'Alt + M',
+                            action: 'Toggle Mode between Official Exam Mode and Coach & Marathon Mode',
+                          },
+                          {
+                            keys: 'Alt + 1–4 / Alt + A–D',
+                            action: 'Select Multiple-Choice Option A (1), B (2), C (3), or D (4)',
+                          },
+                          {
+                            keys: 'Alt + P / Ctrl + Space',
+                            action: 'Play / Replay Audio in Listening and Speaking',
+                          },
+                          {
+                            keys: 'Alt + S',
+                            action: 'Show / Hide Script or Questions in Listening and Speaking',
+                          },
+                        ].map((item) => (
+                          <div
+                            key={item.keys}
+                            className="flex items-start justify-between gap-3 p-2.5 rounded-lg bg-slate-50 border border-slate-200/80 text-xs"
+                          >
+                            <span className="text-slate-700 font-medium leading-snug">{item.action}</span>
+                            <kbd className="px-2 py-1 bg-white border border-slate-300 rounded-md text-[11px] font-mono font-bold text-teal-900 shadow-2xs whitespace-nowrap shrink-0">
+                              {item.keys}
+                            </kbd>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                )}
               </div>
 
               <SettingsTab
