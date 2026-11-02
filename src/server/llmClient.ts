@@ -48,7 +48,7 @@ export function resolveProviderDefaults(
       } else if (purpose === 'transcription') {
         resolvedModel = resolvedModel || 'openai/whisper-large-v3';
       } else {
-        resolvedModel = resolvedModel || 'meta-llama/llama-3.3-70b-instruct:free';
+        resolvedModel = resolvedModel || 'openrouter/free';
       }
       break;
 
@@ -142,7 +142,7 @@ export async function callOpenAiCompatibleChat(options: LlmCallOptions & { requi
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 35000);
+  const timer = setTimeout(() => controller.abort(), 8000);
 
   try {
     let res = await fetch(endpoint, {

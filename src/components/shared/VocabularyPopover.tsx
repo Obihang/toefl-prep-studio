@@ -80,7 +80,7 @@ export const VocabularyPopover: React.FC<Props> = ({
       // 1. Save to local storage store (instant, broadcasts toefl_vocab_updated)
       saveVocabLocal(
         wordToSave,
-        contextSentence || '',
+        '',
         `${partOfSpeech}: ${definition}`,
         taskType
       );
@@ -92,7 +92,7 @@ export const VocabularyPopover: React.FC<Props> = ({
         phonetic,
         partOfSpeech,
         entryToSave?.synonyms || [],
-        contextSentence || '',
+        '',
         taskType
       );
 
@@ -199,14 +199,6 @@ export const VocabularyPopover: React.FC<Props> = ({
                   <strong className="text-slate-800">Synonyms:</strong> {entry.synonyms.slice(0, 4).join(', ')}
                 </p>
               )}
-            </div>
-          )}
-
-          {/* Context sentence from reading passage if available */}
-          {contextSentence && (
-            <div className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-lg text-[11px] text-slate-600 leading-relaxed">
-              <span className="font-semibold text-slate-700 block mb-0.5">Context in passage:</span>
-              <p className="italic text-slate-700 line-clamp-2">"{contextSentence}"</p>
             </div>
           )}
 

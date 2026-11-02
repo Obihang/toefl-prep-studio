@@ -30,11 +30,8 @@ export const GENERATION_MODELS: Record<ModelProvider, string[]> = {
     'nvidia/llama-3.1-nemotron-70b-instruct',
   ],
   openrouter: [
+    'openrouter/free',
     'meta-llama/llama-3.3-70b-instruct:free',
-    'google/gemini-2.0-flash-exp:free',
-    'deepseek/deepseek-chat:free',
-    'qwen/qwen-2.5-72b-instruct:free',
-    'meta-llama/llama-3.1-8b-instruct:free',
   ],
   openai: ['gpt-4o-mini', 'gpt-4o'],
   deepseek: ['deepseek-chat'],
@@ -55,9 +52,8 @@ export const EVALUATION_MODELS: Record<ModelProvider, string[]> = {
     'meta/llama-3.1-70b-instruct',
   ],
   openrouter: [
+    'openrouter/free',
     'meta-llama/llama-3.3-70b-instruct:free',
-    'deepseek/deepseek-chat:free',
-    'google/gemini-2.0-flash-exp:free',
   ],
   openai: ['gpt-4o-mini', 'gpt-4o'],
   deepseek: ['deepseek-chat'],

@@ -195,16 +195,12 @@ export const MODEL_ROLES: Record<
   },
   openrouter: {
     generator: [
+      'openrouter/free',
       'meta-llama/llama-3.3-70b-instruct:free',
-      'google/gemini-2.0-flash-exp:free',
-      'deepseek/deepseek-chat:free',
-      'qwen/qwen-2.5-72b-instruct:free',
-      'meta-llama/llama-3.1-8b-instruct:free',
     ],
     evaluator: [
+      'openrouter/free',
       'meta-llama/llama-3.3-70b-instruct:free',
-      'deepseek/deepseek-chat:free',
-      'google/gemini-2.0-flash-exp:free',
     ],
   },
   openai: {
@@ -332,7 +328,7 @@ export function rankModelsForRole(
   if (p === 'gemini') {
     filtered = filtered.filter((id) => /^gemini-/i.test(id) && !/gemma/i.test(id));
   } else if (p === 'openrouter') {
-    filtered = filtered.filter((id) => id.endsWith(':free'));
+    filtered = filtered.filter((id) => id === 'openrouter/free' || id.endsWith(':free'));
   }
 
   const sorted = filtered.sort((a, b) => scoreModelForRole(b, role, p) - scoreModelForRole(a, role, p));
@@ -510,10 +506,11 @@ export async function resolveModelChains(
     setLastListError(p, { status: 500, message: redactKeyInText(err?.message || String(err), cleanKey) });
   }
 
-  // OpenRouter: keep only ':free' models with verified free pricing
+  // OpenRouter: keep only 'openrouter/free' or ':free' models with verified free pricing
   if (p === 'openrouter') {
     rawModels = rawModels.filter((m: any) => {
       const id = typeof m === 'string' ? m : String(m?.id || '');
+      if (id === 'openrouter/free') return true;
       if (!id.endsWith(':free')) return false;
       if (typeof m === 'object' && m?.pricing) {
         const promptPrice = Number(m.pricing.prompt ?? 0);

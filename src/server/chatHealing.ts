@@ -4,24 +4,16 @@ import { resolveModelChains, isModelGone, markModelDead } from './modelRoles';
 
 const FALLBACK_MODELS_BY_PROVIDER: Record<string, string[]> = {
   openrouter: [
+    'openrouter/free',
     'meta-llama/llama-3.3-70b-instruct:free',
-    'google/gemini-2.0-flash-exp:free',
-    'deepseek/deepseek-chat:free',
-    'qwen/qwen-2.5-72b-instruct:free',
-    'meta-llama/llama-3.1-8b-instruct:free',
   ],
   groq: [
     'llama-3.3-70b-versatile',
     'llama-3.1-8b-instant',
-    'openai/gpt-oss-120b',
-    'openai/gpt-oss-20b',
   ],
   nvidia: [
     'meta/llama-3.3-70b-instruct',
     'meta/llama-3.1-70b-instruct',
-    'meta/llama-3.1-8b-instruct',
-    'qwen/qwen2.5-72b-instruct',
-    'nvidia/llama-3.1-nemotron-70b-instruct',
   ],
 };
 
@@ -55,7 +47,7 @@ export async function callChatWithHealing(
 
     const defaultModel =
       provider === 'openrouter'
-        ? 'meta-llama/llama-3.3-70b-instruct:free'
+        ? 'openrouter/free'
         : provider === 'groq'
         ? 'llama-3.3-70b-versatile'
         : 'meta/llama-3.3-70b-instruct';
@@ -65,22 +57,9 @@ export async function callChatWithHealing(
       markModelDead(attemptedModel);
     }
 
-    // Determine alternative candidates
-    let candidatesToTry: string[] = [];
-
-    if (isQuotaOr429) {
-      const predefined = FALLBACK_MODELS_BY_PROVIDER[provider] || [];
-      candidatesToTry = predefined.filter((m) => m !== attemptedModel);
-    } else {
-      // Model gone: fetch fresh models from provider discovery
-      try {
-        const chains = await resolveModelChains(provider, options.apiKey, true);
-        const fresh = chains.generation || [];
-        candidatesToTry = fresh.filter((m) => m !== attemptedModel).slice(0, 3);
-      } catch {
-        candidatesToTry = (FALLBACK_MODELS_BY_PROVIDER[provider] || []).filter((m) => m !== attemptedModel);
-      }
-    }
+    // Cap fallback candidates to at most 1 alternative so total time stays within 8s
+    const predefined = FALLBACK_MODELS_BY_PROVIDER[provider] || [];
+    const candidatesToTry = predefined.filter((m) => m !== attemptedModel).slice(0, 1);
 
     let lastError = err;
     for (const altModel of candidatesToTry) {

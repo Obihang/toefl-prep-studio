@@ -112,14 +112,12 @@ function buildFallbackChain(
       'llama-3.1-8b-instant',
     ],
     openrouter: [
+      'openrouter/free',
       'meta-llama/llama-3.3-70b-instruct:free',
-      'deepseek/deepseek-chat:free',
-      'google/gemini-2.0-flash-exp:free',
     ],
     nvidia: [
       'meta/llama-3.3-70b-instruct',
       'nvidia/llama-3.1-nemotron-70b-instruct',
-      'meta/llama-3.1-70b-instruct',
     ],
   };
 
@@ -249,7 +247,7 @@ async function callProviderForEvaluation(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
+  const timeout = setTimeout(() => controller.abort(), 8000);
 
   try {
     const res = await fetch(endpoint, {

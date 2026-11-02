@@ -155,7 +155,7 @@ export const DashboardModal: React.FC<Props> = ({
               userId: 'local',
               word: lw.word,
               definition: lw.definition || '',
-              context: lw.contextSentence || '',
+              context: '',
               taskType: lw.section || 'general',
               leitnerBox: 1,
               nextReviewDate: new Date(),
@@ -164,7 +164,7 @@ export const DashboardModal: React.FC<Props> = ({
           });
 
           remoteWords.forEach((rw) => {
-            mergedMap.set(rw.word.toLowerCase(), rw);
+            mergedMap.set(rw.word.toLowerCase(), { ...rw, context: '' });
           });
 
           setVocab(Array.from(mergedMap.values()));
@@ -175,7 +175,7 @@ export const DashboardModal: React.FC<Props> = ({
             userId: 'local',
             word: lw.word,
             definition: lw.definition || '',
-            context: lw.contextSentence || '',
+            context: '',
             taskType: lw.section || 'general',
             leitnerBox: 1,
             nextReviewDate: new Date(),

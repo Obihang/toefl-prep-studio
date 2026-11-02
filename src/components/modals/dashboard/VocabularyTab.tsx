@@ -326,13 +326,6 @@ export const VocabularyTab: React.FC<VocabularyTabProps> = ({
                             /{currentCard.phonetic.replace(/\//g, '')}/
                           </p>
                         )}
-                        {currentCard.context && (
-                          <div className="max-w-md mx-auto pt-2">
-                            <p className="text-xs text-slate-500 italic line-clamp-2">
-                              "{currentCard.context}"
-                            </p>
-                          </div>
-                        )}
                         <p className="text-[11px] text-teal-700 font-semibold pt-2">
                           Click or press Space to reveal definition &rarr;
                         </p>
@@ -357,10 +350,10 @@ export const VocabularyTab: React.FC<VocabularyTabProps> = ({
                           </p>
                         </div>
 
-                        {currentCard.context && (
+                        {currentCard.synonyms && currentCard.synonyms.length > 0 && (
                           <div className="max-w-md mx-auto">
-                            <p className="text-xs text-teal-200/80 italic">
-                              "{currentCard.context}"
+                            <p className="text-xs text-teal-200/90">
+                              <strong>Synonyms:</strong> {currentCard.synonyms.slice(0, 4).join(', ')}
                             </p>
                           </div>
                         )}
@@ -471,9 +464,9 @@ export const VocabularyTab: React.FC<VocabularyTabProps> = ({
 
                       <p className="text-xs text-slate-700 leading-relaxed">{v.definition}</p>
 
-                      {v.context && (
-                        <p className="text-[11px] text-slate-400 italic bg-slate-50 border-l-2 border-teal-500 pl-2 py-0.5 rounded-r">
-                          "{v.context}"
+                      {v.synonyms && v.synonyms.length > 0 && (
+                        <p className="text-[11px] text-slate-500">
+                          <strong className="text-slate-700">Synonyms:</strong> {v.synonyms.slice(0, 4).join(', ')}
                         </p>
                       )}
                     </div>

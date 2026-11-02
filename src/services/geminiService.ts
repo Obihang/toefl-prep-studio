@@ -198,7 +198,12 @@ export async function fetchDynamicModels(provider: ModelProvider, apiKey: string
 }
 
 export async function executeWithFallback<T>(
-  operation: (provider: ModelProvider, model: string, apiKey: string) => Promise<T>,
+  operation: (
+    provider: ModelProvider,
+    model: string,
+    apiKey: string,
+    signal?: AbortSignal
+  ) => Promise<T>,
   role: 'generator' | 'evaluator' = 'generator'
 ): Promise<T> {
   const providerKeys = getAllProviderKeys();
@@ -211,18 +216,31 @@ export async function executeWithFallback<T>(
   if (configuredProviders.length === 0) {
     const primaryKey = getStoredApiKey();
     if (primaryKey) {
-      const prov = (preferred && preferred !== 'auto' && preferred !== 'custom' ? preferred : 'gemini') as ModelProvider;
+      const prov = (
+        preferred && preferred !== 'auto' && preferred !== 'custom' ? preferred : 'gemini'
+      ) as ModelProvider;
       inFlightCount[prov] = (inFlightCount[prov] || 0) + 1;
-      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
+      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
       try {
         const models = GENERATION_MODELS[prov] || ['gemini-2.5-flash'];
-        const res = await operation(prov, models[0], primaryKey);
-        const actualProv = ((res as any)?.data?.providerUsed || (res as any)?.providerUsed || prov) as ModelProvider;
+        const res = await operation(prov, models[0], primaryKey, controller.signal);
+        const actualProv = (
+          (res as any)?.data?.providerUsed ||
+          (res as any)?.providerUsed ||
+          prov
+        ) as ModelProvider;
         requestsServedCount[actualProv] = (requestsServedCount[actualProv] || 0) + 1;
         return res;
       } finally {
+        clearTimeout(timeoutId);
         inFlightCount[prov] = Math.max(0, (inFlightCount[prov] || 1) - 1);
-        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
+        }
       }
     }
     throw new Error('No API key is configured.');
@@ -244,8 +262,12 @@ export async function executeWithFallback<T>(
     cooldownUntil[minP] = 0;
   }
 
-  const healthyProviders = configuredProviders.filter((p) => Date.now() >= (cooldownUntil[p] || 0));
-  const cooledDownProviders = configuredProviders.filter((p) => Date.now() < (cooldownUntil[p] || 0));
+  const healthyProviders = configuredProviders.filter(
+    (p) => Date.now() >= (cooldownUntil[p] || 0)
+  );
+  const cooledDownProviders = configuredProviders.filter(
+    (p) => Date.now() < (cooldownUntil[p] || 0)
+  );
 
   // Advance round-robin cursor synchronously before any await
   const baseHealthyOrder = [...healthyProviders];
@@ -273,68 +295,101 @@ export async function executeWithFallback<T>(
   const orderedCandidates = [...healthyProviders, ...cooledDownProviders];
   let lastError: any = null;
 
-  for (const provider of orderedCandidates) {
-    // Synchronously reserve this provider on the VERY FIRST LINE before any await (including fetchDynamicModels)
+  for (let i = 0; i < orderedCandidates.length; i++) {
+    // Re-sort remaining unvisited candidates by live cooldown & live inFlightCount
+    // so if an earlier provider timed out/failed, we immediately fail over to an idle key (like gemini or groq)!
+    if (i > 0 && i < orderedCandidates.length - 1) {
+      const remaining = orderedCandidates.slice(i);
+      const currentTs = Date.now();
+      remaining.sort((a, b) => {
+        const coolA = currentTs < (cooldownUntil[a] || 0) ? 1 : 0;
+        const coolB = currentTs < (cooldownUntil[b] || 0) ? 1 : 0;
+        if (coolA !== coolB) return coolA - coolB;
+        const loadA = inFlightCount[a] || 0;
+        const loadB = inFlightCount[b] || 0;
+        return loadA - loadB;
+      });
+      orderedCandidates.splice(i, remaining.length, ...remaining);
+    }
+
+    const provider = orderedCandidates[i];
+    // Synchronously reserve this provider on the VERY FIRST LINE before any await
     // so concurrent workers starting at t=0ms see inFlightCount[provider] === 1 immediately!
     inFlightCount[provider] = (inFlightCount[provider] || 0) + 1;
-    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
+    }
+
+    const controller = new AbortController();
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     try {
-      const apiKey = (providerKeys[provider] || getStoredApiKey(provider as ApiProvider) || '').trim();
+      const apiKey = (
+        providerKeys[provider] ||
+        getStoredApiKey(provider as ApiProvider) ||
+        ''
+      ).trim();
       if (!apiKey) continue;
 
-      const models =
-        role === 'generator'
-          ? await fetchDynamicModels(provider, apiKey)
-          : EVALUATION_MODELS[provider] || GENERATION_MODELS[provider] || [];
+      const primaryModel =
+        (role === 'generator'
+          ? GENERATION_MODELS[provider]?.[0]
+          : EVALUATION_MODELS[provider]?.[0]) ||
+        GENERATION_MODELS[provider]?.[0] ||
+        '';
 
-      for (const model of models) {
-        try {
-          const res = await operation(provider, model, apiKey);
-          const actualProvider = (
-            (res as any)?.data?.providerUsed ||
-            (res as any)?.providerUsed ||
-            provider
-          ) as ModelProvider;
-          cooldownUntil[actualProvider] = 0;
-          requestsServedCount[actualProvider] = (requestsServedCount[actualProvider] || 0) + 1;
-          return res;
-        } catch (err: any) {
-          lastError = err;
-          const status = err?.status || err?.statusCode || 0;
-          const msg = (err?.message || String(err)).toLowerCase();
+      // Make exactly 1 call per candidate provider with a strict 12-second AbortController timeout
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          controller.abort();
+          const tErr: any = new Error(
+            `Provider ${provider} timed out after 12 seconds.`
+          );
+          tErr.status = 408;
+          tErr.isTimeout = true;
+          reject(tErr);
+        }, 12000);
+      });
 
-          if (
-            status === 429 ||
-            status === 503 ||
-            msg.includes('rate limit') ||
-            msg.includes('quota') ||
-            msg.includes('overloaded') ||
-            msg.includes('resource_exhausted')
-          ) {
-            cooldownUntil[provider] = Date.now() + 60_000;
-            break;
-          } else if (
-            status === 401 ||
-            status === 402 ||
-            status === 403 ||
-            msg.includes('invalid key') ||
-            msg.includes('unauthorized') ||
-            msg.includes('billing')
-          ) {
-            cooldownUntil[provider] = Date.now() + 10 * 60_000;
-            break;
-          } else if (err?.providerChainExhausted) {
-            if (!cooldownUntil[provider] || cooldownUntil[provider] <= Date.now()) {
-              cooldownUntil[provider] = Date.now() + 30_000;
-            }
-            break;
-          }
-        }
+      const res = await Promise.race([
+        operation(provider, primaryModel, apiKey, controller.signal),
+        timeoutPromise,
+      ]);
+
+      const actualProvider = (
+        (res as any)?.data?.providerUsed ||
+        (res as any)?.providerUsed ||
+        provider
+      ) as ModelProvider;
+      cooldownUntil[actualProvider] = 0;
+      requestsServedCount[actualProvider] =
+        (requestsServedCount[actualProvider] || 0) + 1;
+      return res;
+    } catch (err: any) {
+      controller.abort();
+      lastError = err;
+      const status = err?.status || err?.statusCode || 0;
+      const msg = (err?.message || String(err)).toLowerCase();
+
+      if (
+        status === 401 ||
+        status === 402 ||
+        status === 403 ||
+        msg.includes('invalid key') ||
+        msg.includes('unauthorized') ||
+        msg.includes('billing')
+      ) {
+        cooldownUntil[provider] = Date.now() + 10 * 60_000;
+      } else {
+        // Sideline slow (>12s timeout) or failing provider for 90 seconds so workers immediately use healthy idle keys
+        cooldownUntil[provider] = Date.now() + 90_000;
       }
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
       inFlightCount[provider] = Math.max(0, (inFlightCount[provider] || 1) - 1);
-      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('toefl_pool_status_updated'));
+      }
     }
   }
 
@@ -520,7 +575,7 @@ export async function callBackendGenerate(
     : basePromptData;
 
   try {
-    return await executeWithFallback(async (provider, _model, apiKey) => {
+    return await executeWithFallback(async (provider, _model, apiKey, signal) => {
       const singleProviderMap = { [provider]: apiKey };
       const options = {
         provider,
@@ -536,6 +591,7 @@ export async function callBackendGenerate(
       const res = await safeFetchJson('/api/generate-task', {
         method: 'POST',
         headers: buildSingleProviderHeaders(provider, apiKey),
+        signal,
         body: JSON.stringify({
           taskType,
           level,
@@ -570,7 +626,7 @@ export async function callBackendGenerate(
       if (res.data) {
         res.data = {
           ...normalizeTaskData(res.data, taskType, { coachMode: isCoachMode }),
-          providerUsed: res.data.providerUsed || provider,
+          providerUsed: res.providerUsed || res.data.providerUsed || provider,
         };
       }
       return res;
@@ -619,7 +675,7 @@ export async function evaluateResponse(
     return localBaseline;
   }
 
-  return executeWithFallback(async (prov, _model, key) => {
+  return executeWithFallback(async (prov, _model, key, signal) => {
     const singleProviderMap = { [prov]: key };
     const options = {
       provider: prov,
@@ -634,6 +690,7 @@ export async function evaluateResponse(
     const res = await safeFetchJson('/api/evaluate-response', {
       method: 'POST',
       headers: buildSingleProviderHeaders(prov, key),
+      signal,
       body: JSON.stringify({
         taskType,
         promptData,

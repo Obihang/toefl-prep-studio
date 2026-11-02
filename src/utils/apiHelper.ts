@@ -3,6 +3,12 @@ export async function safeFetchJson(url: string, options?: RequestInit): Promise
   try {
     res = await fetch(url, options);
   } catch (err: any) {
+    if (err?.name === 'AbortError' || /abort|timed?\s*out/i.test(String(err?.message || ''))) {
+      const abortErr: any = new Error('Provider request timed out after 12 seconds.');
+      abortErr.status = 408;
+      abortErr.isTimeout = true;
+      throw abortErr;
+    }
     const netErr: any = new Error('Network connection error. Please check your connection and try again.');
     netErr.status = 0;
     throw netErr;

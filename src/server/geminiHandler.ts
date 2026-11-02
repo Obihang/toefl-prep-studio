@@ -1328,11 +1328,12 @@ Return JSON format: {"title": "Academic Discussion Board", "professorName": "Pro
         if (modelsToTry.length === 0) {
           modelsToTry = [explicitModel || 'llama-3.3-70b-versatile'];
         }
+        modelsToTry = modelsToTry.slice(0, 2);
 
         let providerModelErr: any = null;
         for (const modelToUse of modelsToTry) {
           try {
-            const { text, modelUsed } = await callChatWithHealing({
+            const { text, modelUsed } = await callOpenAiCompatibleChat({
               provider: candidate.provider,
               apiKey: candidate.apiKey,
               baseUrl: candidate.baseUrl,
