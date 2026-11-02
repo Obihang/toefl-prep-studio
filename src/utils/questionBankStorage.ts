@@ -3,6 +3,7 @@ import {
   normalizeTaskData,
   normalizeQuestionBankItem,
   normalizeCompleteWordsTask,
+  isCorruptedCompleteWordsTask,
   validateNormalizedTask,
   normalizeDifficultyLabel,
   normalizeTopicLabel,
@@ -65,7 +66,7 @@ export const TOEFL_2026_PURGE_V4 = TOEFL_2026_PURGE_V19;
 export const TOEFL_2026_PURGE_V3 = TOEFL_2026_PURGE_V19;
 export const TOEFL_2026_PURGE_V2 = TOEFL_2026_PURGE_V19;
 export const STATIC_SHARDS_SYNC_KEY = 'toefl_static_shards_synced_v31';
-export const MIGRATE_CW_HEAD_TAIL_V1 = 'toefl_cw_head_tail_migrated_v1';
+export const MIGRATE_CW_HEAD_TAIL_V1 = 'toefl_cw_head_tail_migrated_v2';
 
 export function canonicalizeTaskType(taskType: string): string {
   return normalizerCanonicalizeTaskType(taskType);
@@ -264,7 +265,7 @@ export async function migrateCompleteWordsHeadTailV1(): Promise<void> {
         }
       }
 
-      // 2. Migrate any edited complete-words items in localStorage (unless isManualDevEdit === true)
+      // 2. Migrate any edited complete-words items in localStorage (unless isManualDevEdit === true), purging corrupted items
       try {
         const editedMap = getEditedQuestionsMap();
         let editedModified = false;
@@ -277,6 +278,11 @@ export async function migrateCompleteWordsHeadTailV1(): Promise<void> {
             String(id).startsWith('coach_cw_') ||
             Array.isArray(item.blanks);
           if (looksLikeCw && !item.isManualDevEdit && !item.content?.isManualDevEdit) {
+            if (isCorruptedCompleteWordsTask(item.content || item)) {
+              delete editedMap[id];
+              editedModified = true;
+              continue;
+            }
             const isCoach =
               item.mode === 'coach' ||
               Boolean(item.coachMode) ||
@@ -286,6 +292,11 @@ export async function migrateCompleteWordsHeadTailV1(): Promise<void> {
               mode: isCoach ? 'coach' : 'exam',
               coachMode: isCoach,
             });
+            if (isCorruptedCompleteWordsTask(norm)) {
+              delete editedMap[id];
+              editedModified = true;
+              continue;
+            }
             editedMap[id] = {
               ...item,
               ...norm,
@@ -299,7 +310,7 @@ export async function migrateCompleteWordsHeadTailV1(): Promise<void> {
         }
       } catch {}
 
-      // 3. Migrate all complete-words documents in IndexedDB (`toefl_question_bank` and `coach_questions`)
+      // 3. Migrate all complete-words documents in IndexedDB (`toefl_question_bank` and `coach_questions`) and purge corrupted ones
       try {
         const dbInstance = await openIndexedDB();
         for (const mode of ['exam', 'coach'] as const) {
@@ -317,16 +328,27 @@ export async function migrateCompleteWordsHeadTailV1(): Promise<void> {
           });
 
           const updatedRows: any[] = [];
+          const corruptedRowIds: string[] = [];
           for (const row of allRows) {
             const rawType = row?.taskType || row?.type || row?.content?.taskType || '';
             if (canonicalizeTaskType(rawType) !== 'complete-words') continue;
 
             const baseContent = row?.content || row || {};
+            if (!baseContent.isManualDevEdit && isCorruptedCompleteWordsTask(baseContent)) {
+              if (row?.id) corruptedRowIds.push(String(row.id));
+              continue;
+            }
+
             const normalized = normalizeCompleteWordsTask({
               ...baseContent,
               mode,
               coachMode: mode === 'coach',
             });
+            if (!baseContent.isManualDevEdit && isCorruptedCompleteWordsTask(normalized)) {
+              if (row?.id) corruptedRowIds.push(String(row.id));
+              continue;
+            }
+
             const updatedContent = {
               ...baseContent,
               ...normalized,
@@ -350,11 +372,14 @@ export async function migrateCompleteWordsHeadTailV1(): Promise<void> {
             });
           }
 
-          if (updatedRows.length > 0) {
+          if (updatedRows.length > 0 || corruptedRowIds.length > 0) {
             await new Promise<void>((resolve) => {
               try {
                 const tx = dbInstance.transaction(storeName, 'readwrite');
                 const store = tx.objectStore(storeName);
+                for (const delId of corruptedRowIds) {
+                  store.delete(delId);
+                }
                 for (const uRow of updatedRows) {
                   store.put(uRow);
                 }
@@ -426,7 +451,7 @@ export async function migrateCompleteWordsHeadTailV1(): Promise<void> {
       delete curatedMemoryCache['complete-words'];
       delete coachMemoryCache['complete-words'];
 
-      // 4. Migrate and overwrite all complete-words documents in Firestore (`questions` and `coach_questions`)
+      // 4. Migrate and overwrite all complete-words documents in Firestore (`questions` and `coach_questions`), permanently deleting corrupted ones
       try {
         await ensureAuthenticated();
         if (db) {
@@ -440,11 +465,21 @@ export async function migrateCompleteWordsHeadTailV1(): Promise<void> {
               if (canonicalizeTaskType(rawType) !== 'complete-words') continue;
 
               const baseContent = rawDoc.content || rawDoc;
+              if (!baseContent.isManualDevEdit && isCorruptedCompleteWordsTask(baseContent)) {
+                await deleteDoc(doc(db, colName, docSnap.id)).catch(() => {});
+                continue;
+              }
+
               const normalized = normalizeCompleteWordsTask({
                 ...baseContent,
                 mode,
                 coachMode: mode === 'coach',
               });
+              if (!baseContent.isManualDevEdit && isCorruptedCompleteWordsTask(normalized)) {
+                await deleteDoc(doc(db, colName, docSnap.id)).catch(() => {});
+                continue;
+              }
+
               const updatedContent = {
                 ...baseContent,
                 ...normalized,
@@ -993,6 +1028,9 @@ export function getFilteredBankTasks(
   const all = (targetMemCache[canonicalType] || []).filter((t) => {
     const id = String(t?.id || t?.questionDocId || '');
     if (id && deletedSet.has(id)) return false;
+    if (canonicalType === 'complete-words' && !t?.isManualDevEdit && isCorruptedCompleteWordsTask(t)) {
+      return false;
+    }
     const sig = getQuestionContentSignature(canonicalType, t);
     return !deletedSet.has(sig);
   });
@@ -1019,6 +1057,9 @@ export function getLoadedCuratedTasks(
   const all = (targetMemCache[canonicalType] || []).filter((t) => {
     const id = String(t?.id || t?.questionDocId || '');
     if (id && deletedSet.has(id)) return false;
+    if (canonicalType === 'complete-words' && !t?.isManualDevEdit && isCorruptedCompleteWordsTask(t)) {
+      return false;
+    }
     const sig = getQuestionContentSignature(canonicalType, t);
     return !deletedSet.has(sig);
   });
@@ -1893,6 +1934,9 @@ export async function getSharedQuestions(
   for (const tId of targetTypes) {
     const items = targetMemCache[tId] || [];
     for (const item of items) {
+      if (tId === 'complete-words' && !item?.isManualDevEdit && isCorruptedCompleteWordsTask(item)) {
+        continue;
+      }
       if (!matchesLevelFilter(item, difficulty)) continue;
       if (!matchesTopicFilter(item, topic)) continue;
       const sig = getQuestionContentSignature(tId, item);
@@ -2837,6 +2881,7 @@ function isCorruptedQuestionRecord(taskType: string, content: any): boolean {
   const tType = canonicalizeTaskType(taskType);
 
   if (tType === 'complete-words') {
+    if (isCorruptedCompleteWordsTask(content)) return true;
     const blanks = content.blanks;
     if (!Array.isArray(blanks) || blanks.length < 8) return true;
     for (const b of blanks) {
@@ -3234,7 +3279,15 @@ export async function repairAndAuditQuestionBank(
         continue;
       }
 
-      // Step 2 & 3: Normalize non-edited question and check for corruption
+      // Step 2 & 3: Check pre-normalization corruption on complete-words, normalize non-edited question, and check for corruption
+      if (tType === 'complete-words' && isCorruptedCompleteWordsTask(rawContent)) {
+        corruptedPurged++;
+        if (fromFirestore) {
+          firestoreBatchOps.push({ op: 'delete', docId: targetFsDocId });
+        }
+        continue;
+      }
+
       const normalizedWrapper = normalizeQuestionBankItem(rawContent, tType);
       const normalizedContent = normalizedWrapper?.content || normalizedWrapper;
 

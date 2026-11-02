@@ -1,7 +1,10 @@
 import { TaskTypeId, TASK_DEFINITIONS } from '../types/taskTypes';
 import { hasAnyProviderKey } from './apiKey';
 import { callBackendGenerate } from '../services/geminiService';
-import { normalizeCompleteWordsTask } from './taskNormalizer';
+import {
+  normalizeCompleteWordsTask,
+  isCorruptedCompleteWordsTask,
+} from './taskNormalizer';
 
 export type PrefetchedItem = {
   id: string;
@@ -15,20 +18,23 @@ export type PrefetchedItem = {
 
 export type PrefetchQueue = Record<string, PrefetchedItem[]>;
 
-const STORAGE_KEY = 'toefl_prefetched_queue_v5';
-const COACH_STORAGE_KEY = 'toefl_prefetched_coach_queue_v3';
+const STORAGE_KEY = 'toefl_prefetched_queue_v6';
+const COACH_STORAGE_KEY = 'toefl_prefetched_coach_queue_v4';
 const CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 
 if (typeof window !== 'undefined') {
   try {
-    sessionStorage.removeItem('toefl_prefetched_queue_v3');
-    sessionStorage.removeItem('toefl_prefetched_queue_v4');
-    sessionStorage.removeItem('toefl_prefetched_coach_queue_v1');
-    sessionStorage.removeItem('toefl_prefetched_coach_queue_v2');
-    localStorage.removeItem('toefl_prefetched_queue_v3');
-    localStorage.removeItem('toefl_prefetched_queue_v4');
-    localStorage.removeItem('toefl_prefetched_coach_queue_v1');
-    localStorage.removeItem('toefl_prefetched_coach_queue_v2');
+    for (const k of [
+      'toefl_prefetched_queue_v3',
+      'toefl_prefetched_queue_v4',
+      'toefl_prefetched_queue_v5',
+      'toefl_prefetched_coach_queue_v1',
+      'toefl_prefetched_coach_queue_v2',
+      'toefl_prefetched_coach_queue_v3',
+    ]) {
+      sessionStorage.removeItem(k);
+      localStorage.removeItem(k);
+    }
   } catch {
     // ignore storage errors
   }
@@ -161,9 +167,15 @@ export function loadPrefetchQueueFromStorage(mode: 'exam' | 'coach' = 'exam'): P
     for (const [key, items] of Object.entries(parsed)) {
       if (Array.isArray(items)) {
         const valid = items
-          .filter(
-            (item: any) => item && typeof item === 'object' && now - (item.createdAt || 0) < CACHE_TTL_MS
-          )
+          .filter((item: any) => {
+            if (!item || typeof item !== 'object' || now - (item.createdAt || 0) >= CACHE_TTL_MS) {
+              return false;
+            }
+            if ((key === 'complete-words' || key === 'complete_words') && isCorruptedCompleteWordsTask(item)) {
+              return false;
+            }
+            return true;
+          })
           .map((item: any) => {
             if (key === 'complete-words' || key === 'complete_words') {
               const norm = normalizeCompleteWordsTask({
@@ -174,6 +186,12 @@ export function loadPrefetchQueueFromStorage(mode: 'exam' | 'coach' = 'exam'): P
               return { ...item, ...norm };
             }
             return item;
+          })
+          .filter((item: any) => {
+            if ((key === 'complete-words' || key === 'complete_words') && isCorruptedCompleteWordsTask(item)) {
+              return false;
+            }
+            return true;
           });
         if (valid.length > 0) cleanQueue[key] = valid;
       }

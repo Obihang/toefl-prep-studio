@@ -560,6 +560,185 @@ export function splitCompleteWordsSentences(paragraph: string): string[] {
   return mergedSentences.length > 0 ? mergedSentences : [clean];
 }
 
+export const VALID_SHORT_WORDS = new Set([
+  'in', 'on', 'at', 'to', 'of', 'by', 'as', 'is', 'it', 'or', 'be', 'we', 'he', 'so', 'no', 'up', 'do', 'if', 'an', 'my', 'us',
+  'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'any', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get',
+  'has', 'him', 'his', 'how', 'man', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'its', 'let', 'put', 'say', 'she', 'too',
+  'use', 'may', 'set', 'own', 'far', 'few', 'law', 'low', 'key', 'sea', 'air', 'age', 'era', 'ice', 'oil', 'gas', 'sun', 'led',
+  'met', 'ran', 'yet', 'per', 'via', 'nor', 'due',
+]);
+
+const KNOWN_GIBBERISH_TOKENS = new Set([
+  'dman', 'tm', 'ss', 'gi', 'dri', 'del', 'b', 'c', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm', 'n', 'p', 'q', 'r', 's', 't', 'v', 'w', 'x', 'z',
+]);
+
+export function isEligibleCompleteWordsBlankToken(
+  word: string,
+  isAcronym: boolean,
+  isProperNounMidSentence: boolean
+): boolean {
+  if (!word || isAcronym || isProperNounMidSentence) return false;
+  if (!/^[a-zA-Z]+(?:-[a-zA-Z]+)?$/.test(word)) return false;
+  const lower = word.toLowerCase();
+  if (KNOWN_GIBBERISH_TOKENS.has(lower)) return false;
+  if (word.length <= 3) {
+    return VALID_SHORT_WORDS.has(lower);
+  }
+  // Length >= 4: must contain at least one vowel and not have 5+ consecutive consonants
+  if (!/[aeiouy]/i.test(word)) return false;
+  if (/[bcdfghjklmnpqrstvwxz]{6,}/i.test(word)) return false;
+  return true;
+}
+
+export function sanitizePlainCompleteWordsParagraph(paragraph: string): string {
+  const tokens = String(paragraph || '').split(/\s+/).filter(Boolean);
+  const cleaned: string[] = [];
+
+  for (const tok of tokens) {
+    const m = tok.match(/^([^a-zA-Z0-9]*)([a-zA-Z0-9]+(?:[-'’][a-zA-Z0-9]+)?)([^a-zA-Z0-9]*)$/);
+    if (!m) continue;
+    const [, , core, trail] = m;
+    // Allow numbers (e.g. years, percentages)
+    if (/^\d+(?:[.,]\d+)?%?$/.test(core)) {
+      cleaned.push(tok);
+      continue;
+    }
+    if (!/^[a-zA-Z]+(?:[-'’][a-zA-Z]+)?$/.test(core)) {
+      continue;
+    }
+    const lower = core.toLowerCase();
+    if (KNOWN_GIBBERISH_TOKENS.has(lower)) {
+      // Preserve terminal sentence punctuation if attached to a stripped gibberish token at the end of a sentence
+      if (/[.!?]/.test(trail) && cleaned.length > 0 && !/[.!?]$/.test(cleaned[cleaned.length - 1])) {
+        cleaned[cleaned.length - 1] = cleaned[cleaned.length - 1].replace(/[,;:]$/, '') + '.';
+      }
+      continue;
+    }
+    const isSingleValid = lower === 'a' || core === 'I';
+    const isShortAcronym = core.length >= 2 && core.length <= 5 && core === core.toUpperCase();
+    const isCapitalizedProper = /^[A-Z][a-z]{1,2}$/.test(core) && /[aeiouy]/i.test(core);
+
+    if (core.length <= 3) {
+      if (!isSingleValid && !VALID_SHORT_WORDS.has(lower) && !isShortAcronym && !isCapitalizedProper) {
+        if (/[.!?]/.test(trail) && cleaned.length > 0 && !/[.!?]$/.test(cleaned[cleaned.length - 1])) {
+          cleaned[cleaned.length - 1] = cleaned[cleaned.length - 1].replace(/[,;:]$/, '') + '.';
+        }
+        continue;
+      }
+    } else {
+      // Length >= 4: must contain a vowel (unless uppercase acronym)
+      if (!isShortAcronym && !/[aeiouy]/i.test(core)) {
+        if (/[.!?]/.test(trail) && cleaned.length > 0 && !/[.!?]$/.test(cleaned[cleaned.length - 1])) {
+          cleaned[cleaned.length - 1] = cleaned[cleaned.length - 1].replace(/[,;:]$/, '') + '.';
+        }
+        continue;
+      }
+    }
+    cleaned.push(tok);
+  }
+
+  return cleaned.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+export function countValidCompleteWordsTokens(rawTextInput: string): {
+  validWords: number;
+  gibberishCount: number;
+} {
+  const plain = String(rawTextInput || '')
+    .replace(/\[+([^\]]+)\]+/g, '$1')
+    .replace(/[\[\]_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!plain) return { validWords: 0, gibberishCount: 0 };
+
+  const rawTokens = plain.split(/\s+/).filter(Boolean);
+  let validWords = 0;
+  let gibberishCount = 0;
+
+  for (const tok of rawTokens) {
+    const core = tok.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '');
+    if (!core) continue;
+    if (/^\d+(?:[.,]\d+)?%?$/.test(core)) {
+      validWords++;
+      continue;
+    }
+    const lower = core.toLowerCase();
+    if (KNOWN_GIBBERISH_TOKENS.has(lower)) {
+      gibberishCount++;
+      continue;
+    }
+    const isSingleValid = lower === 'a' || core === 'I';
+    const isAcronym = core.length >= 2 && core.length <= 5 && core === core.toUpperCase();
+    const isCapitalizedProper = /^[A-Z][a-z]{1,2}$/.test(core) && /[aeiouy]/i.test(core);
+
+    if (core.length <= 3) {
+      if (isSingleValid || VALID_SHORT_WORDS.has(lower) || isAcronym || isCapitalizedProper) {
+        validWords++;
+      } else {
+        gibberishCount++;
+      }
+    } else if (/[aeiouy]/i.test(core) && !/[bcdfghjklmnpqrstvwxz]{6,}/i.test(core)) {
+      validWords++;
+    } else {
+      gibberishCount++;
+    }
+  }
+
+  return { validWords, gibberishCount };
+}
+
+export function isCorruptedCompleteWordsTask(rawOrNorm: any): boolean {
+  if (!rawOrNorm || typeof rawOrNorm !== 'object') return true;
+  const content = rawOrNorm.content && typeof rawOrNorm.content === 'object' ? rawOrNorm.content : rawOrNorm;
+  const text = String(content.text || content.passage || rawOrNorm.text || rawOrNorm.passage || '').trim();
+  if (!text || text.length < 40) return true;
+
+  const lowerText = text.toLowerCase();
+  if (
+    lowerText.includes('empirical investigations consistently') ||
+    lowerText.includes('empirical investi[gations] consistently') ||
+    lowerText.includes('interconnected mechanisms operate reliably') ||
+    lowerText.includes('interconnected mecha[nisms] operate') ||
+    lowerText.includes('longitudinal laboratory analyses confirm') ||
+    lowerText.includes('longitudinal labor[atory] analyses') ||
+    /\bdman\b/i.test(lowerText) ||
+    /\bdel\s+b/i.test(lowerText) ||
+    /\btm[_.\s]/i.test(lowerText) ||
+    /_+/.test(text)
+  ) {
+    return true;
+  }
+
+  const { validWords, gibberishCount } = countValidCompleteWordsTokens(text);
+  if (gibberishCount >= 2 || validWords < 35) {
+    return true;
+  }
+
+  const blanks = Array.isArray(content.blanks)
+    ? content.blanks
+    : extractBlanksFromBracketedText(text);
+  if (blanks.length < 8) return true;
+
+  for (const b of blanks) {
+    const pref = String(b?.prefix || '').trim();
+    const ans = String(b?.answer || b?.solution || '').trim();
+    const full = String(b?.fullWord || b?.word || `${pref}${ans}`).trim();
+    if (!pref || !ans || !/^[a-zA-Z]+(?:-[a-zA-Z]+)?$/.test(pref) || !/^[a-zA-Z]+(?:-[a-zA-Z]+)?$/.test(ans)) {
+      return true;
+    }
+    const lowerFull = full.toLowerCase();
+    if (KNOWN_GIBBERISH_TOKENS.has(lowerFull)) return true;
+    if (full.length <= 3 && !VALID_SHORT_WORDS.has(lowerFull)) {
+      return true;
+    }
+    if (full.length >= 4 && !/[aeiouy]/i.test(full)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function normalizeCompleteWordsTask(raw: any): {
   title: string;
   text: string;
@@ -571,14 +750,6 @@ export function normalizeCompleteWordsTask(raw: any): {
 } {
   const fallbackText =
     'Synaptic plasticity is the biological foundation of human learning and memory retention. Neuroscientists have discovered that synapses gradually strengthen through repeated electrical stimulation. This phenomenon directly enables cortical neurons to store vast quantities of complex information across cerebral circuits. As neural pathways consolidate during deep restorative sleep, newly acquired declarative knowledge transitions from temporary hippocampal storage into permanent neocortical networks.';
-
-  const fallbackMiddleSentences = [
-    'Empirical investigations consistently demonstrate that these interconnected mechanisms operate reliably across diverse environmental conditions and biological systems.',
-    'Furthermore, longitudinal laboratory analyses confirm that subtle structural adaptations significantly influence overall functional stability over extended periods.',
-  ];
-
-  const fallbackTailSentence =
-    'Consequently, contemporary researchers continue to refine analytical models to account for these intricate systemic interactions.';
 
   const title = String(raw?.title || 'Complete the Words').trim() || 'Complete the Words';
   let rawText = String(raw?.passage || raw?.text || raw?.content?.passage || raw?.content?.text || '').trim();
@@ -623,7 +794,12 @@ export function normalizeCompleteWordsTask(raw: any): {
     ['self-sustaining', { prefix: 'self-su', answer: 'staining' }],
   ]);
 
-  // Step 1: Repair any corrupted bracket tokens and strip ALL brackets/underscores to produce clean plain English
+  // Step 1: Strip any legacy boilerplate sentences if present in cached data, repair bracket tokens, and sanitize plain English
+  rawText = rawText
+    .replace(/Empirical\s+investi\[?gations\]?\s+consistently\s+demon\[?strate\]?[^.!?]*[.!?]/gi, '')
+    .replace(/Furthermore,\s+longitudinal\s+labor\[?atory\]?\s+analyses\s+confirm[^.!?]*[.!?]/gi, '')
+    .replace(/Consequently,\s+contemporary\s+researchers\s+continue\s+to\s+refine\s+analytical\s+models\s+to\s+account\s+for\s+these\s+intricate\s+systemic\s+interactions[.!?]?/gi, '');
+
   rawText = rawText.replace(/([a-zA-Z'\u2019-]+)\[+([a-zA-Z'\u2019-]+)\]+/g, (_, p, a) =>
     repairBracketToken(p, a)
   );
@@ -631,18 +807,31 @@ export function normalizeCompleteWordsTask(raw: any): {
   rawText = rawText.replace(/\[+([^\]]+)\]+/g, '$1');
   rawText = rawText.replace(/[\[\]_]+/g, '');
 
-  const cleanParagraph = healCorruptedCTestWords(rawText.replace(/\s+/g, ' ').trim());
+  const healedParagraph = healCorruptedCTestWords(rawText.replace(/\s+/g, ' ').trim());
+  const cleanParagraph = sanitizePlainCompleteWordsParagraph(healedParagraph);
 
-  // Step 2: Split paragraph into sentences
-  const sentences = splitCompleteWordsSentences(cleanParagraph);
+  // Step 2: Split paragraph into sentences (NEVER appending off-topic boilerplate sentences)
+  const sentences = splitCompleteWordsSentences(cleanParagraph.length >= 40 ? cleanParagraph : fallbackText);
   if (sentences.length === 1) {
     const words = sentences[0].split(/\s+/);
-    const splitAt = Math.min(12, Math.max(5, Math.floor(words.length / 3)));
-    const head = words.slice(0, splitAt).join(' ').replace(/[.!?]+$/, '') + '.';
-    const rest = words.slice(splitAt).join(' ');
-    sentences.splice(0, 1, head, rest);
+    const headEnd = Math.min(12, Math.max(5, Math.floor(words.length / 4)));
+    const tailStart = Math.max(headEnd + 8, words.length - Math.min(12, Math.max(5, Math.floor(words.length / 4))));
+    const head = words.slice(0, headEnd).join(' ').replace(/[,;:]+$/, '') + '.';
+    const mid = words.slice(headEnd, tailStart).join(' ').replace(/[,;:]+$/, '') + '.';
+    const tail = words.slice(tailStart).join(' ');
+    sentences.splice(0, 1, head, mid, ...(tail ? [tail] : []));
+  } else if (sentences.length === 2) {
+    const secondWords = sentences[1].split(/\s+/);
+    if (secondWords.length >= 16) {
+      const splitIdx = Math.max(8, secondWords.length - Math.min(12, Math.floor(secondWords.length / 3)));
+      const midPart = secondWords.slice(0, splitIdx).join(' ').replace(/[,;:]+$/, '') + '.';
+      const tailPart = secondWords.slice(splitIdx).join(' ');
+      const capTail = tailPart.charAt(0).toUpperCase() + tailPart.slice(1);
+      sentences.splice(1, 1, midPart, capTail);
+    }
   }
 
+  // Count how many eligible words exist in sentences[1 .. sentences.length - 2]
   const countEligibleInSentence = (sentenceStr: string): number => {
     const toks = sentenceStr.split(/(\s+)/);
     let count = 0;
@@ -652,11 +841,10 @@ export function normalizeCompleteWordsTask(raw: any): {
       const m = tok.match(/^([^a-zA-Z]*)([a-zA-Z]+(?:-[a-zA-Z]+)?)([^a-zA-Z]*)$/);
       if (!m) continue;
       const [, , word, trail] = m;
-      const isAlphaOrHyphen = /^[a-zA-Z]+(?:-[a-zA-Z]+)?$/.test(word);
       const isAcronym = word.length >= 2 && word === word.toUpperCase();
       const isCapitalized = /^[A-Z]/.test(word);
       const isProperNounMidSentence = isCapitalized && !atStart;
-      if (isAlphaOrHyphen && word.length >= 2 && !isAcronym && !isProperNounMidSentence) {
+      if (isEligibleCompleteWordsBlankToken(word, isAcronym, isProperNounMidSentence)) {
         count++;
       }
       if (/[.!?]/.test(trail) && !SENTENCE_ABBREVIATIONS.has((word + trail).toLowerCase())) {
@@ -668,24 +856,17 @@ export function normalizeCompleteWordsTask(raw: any): {
     return count;
   };
 
-  // Ensure sentences[1..] have enough eligible words so that strictly alternating every-2nd-word selection
-  // reaches targetBlankCount AND still leaves 1 intact Tail Sentence at the end
-  let middleAndTailEligible = sentences
-    .slice(1)
-    .reduce((sum, s) => sum + countEligibleInSentence(s), 0);
+  const middleOnlyEligible =
+    sentences.length >= 3
+      ? sentences.slice(1, sentences.length - 1).reduce((sum, s) => sum + countEligibleInSentence(s), 0)
+      : 0;
+  // Reserve the final sentence as the intact Tail Sentence whenever middle sentences have at least 16 eligible words (8 blanks)
+  const maxBlankSentenceIdx =
+    sentences.length >= 3 && middleOnlyEligible >= 16 ? sentences.length - 2 : sentences.length - 1;
 
-  let fbIdx = 0;
-  while (middleAndTailEligible < targetBlankCount * 2) {
-    const insertPos = Math.max(1, sentences.length - 1);
-    const extraSentence = fallbackMiddleSentences[fbIdx % fallbackMiddleSentences.length];
-    sentences.splice(insertPos, 0, extraSentence);
-    middleAndTailEligible += countEligibleInSentence(extraSentence);
-    fbIdx++;
-  }
-
-  // Step 3 & 4 & 5: Keep Sentence 1 (sentences[0]) 100% intact as the Head Sentence (0 blanks).
-  // Starting at the first word of Sentence 2 (sentences[1]), blank the second half (Math.floor(L / 2))
-  // of every 2nd eligible word until targetBlankCount (10 in Exam Mode, 25 in Coach Mode) blanks are created.
+  // Step 3: Keep Sentence 1 (sentences[0]) 100% intact as the Head Sentence (0 blanks).
+  // Starting at Sentence 2 (sentences[1]), blank the second half of every 2nd eligible word
+  // up to targetBlankCount (10 in Exam Mode, 25 in Coach Mode), keeping the Tail Sentence intact.
   const blanks: NormalizedBlankItem[] = [];
   let blankCounter = 0;
   let eligibleCount = 0;
@@ -695,6 +876,11 @@ export function normalizeCompleteWordsTask(raw: any): {
 
   for (let sIdx = 1; sIdx < sentences.length; sIdx++) {
     const sent = sentences[sIdx];
+    if (sIdx > maxBlankSentenceIdx || blanks.length >= targetBlankCount) {
+      rebuiltSentences.push(sent.replace(/\s+/g, ' ').trim());
+      continue;
+    }
+
     const tokens = sent.split(/(\s+)/);
     let isAtSentenceStart = true;
 
@@ -705,12 +891,10 @@ export function normalizeCompleteWordsTask(raw: any): {
       if (!m) return tok;
 
       const [, lead, word, trail] = m;
-      const isAlphaOrHyphen = /^[a-zA-Z]+(?:-[a-zA-Z]+)?$/.test(word);
       const isAcronym = word.length >= 2 && word === word.toUpperCase();
       const isCapitalized = /^[A-Z]/.test(word);
       const isProperNounMidSentence = isCapitalized && !isAtSentenceStart;
-      const isEligible =
-        isAlphaOrHyphen && word.length >= 2 && !isAcronym && !isProperNounMidSentence;
+      const isEligible = isEligibleCompleteWordsBlankToken(word, isAcronym, isProperNounMidSentence);
 
       if (/[.!?]/.test(trail)) {
         const lower = (word + trail).toLowerCase();
@@ -765,13 +949,11 @@ export function normalizeCompleteWordsTask(raw: any): {
     rebuiltSentences.push(rebuiltToks.join('').replace(/\s+/g, ' ').trim());
   }
 
-  // Step 6: Ensure there is always 1 intact Tail Sentence after `lastBlankSentenceIdx`,
-  // and slice to `rebuiltSentences.slice(0, lastBlankSentenceIdx + 2)` to strip any extra trailing sentences.
-  if (lastBlankSentenceIdx >= rebuiltSentences.length - 1) {
-    rebuiltSentences.push(fallbackTailSentence);
-  }
-
-  const finalSentences = rebuiltSentences.slice(0, lastBlankSentenceIdx + 2);
+  // Keep 1 intact Tail Sentence from the passage after lastBlankSentenceIdx when available
+  const finalSentences =
+    lastBlankSentenceIdx < rebuiltSentences.length - 1
+      ? rebuiltSentences.slice(0, lastBlankSentenceIdx + 2)
+      : rebuiltSentences;
   const normalizedText = finalSentences.join(' ').replace(/\s+/g, ' ').trim();
 
   return {
@@ -2563,6 +2745,7 @@ export function validateNormalizedTask(taskTypeOrItem: string | any, normalizedD
     case 'complete-words': {
       const text = String(data.text || '');
       if (!text || text.length < 50) return false;
+      if (!data.isManualDevEdit && isCorruptedCompleteWordsTask(data)) return false;
       // Reject any backwards blank where ] or ]] is followed immediately by letters (e.g. [penetr]ate or [[penetr]]ate)
       if (/\]+[a-zA-Z]/.test(text)) return false;
       // Split on [answer] or [[answer]]

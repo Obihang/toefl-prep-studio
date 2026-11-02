@@ -14,7 +14,11 @@ import {
 } from '../utils/apiKey';
 import { safeFetchJson } from '../utils/apiHelper';
 import { evaluateResponseLocally, mergeAiAndLocalEvaluation } from '../utils/localEvaluator';
-import { normalizeTaskData } from '../utils/taskNormalizer';
+import {
+  normalizeTaskData,
+  countValidCompleteWordsTokens,
+  isCorruptedCompleteWordsTask,
+} from '../utils/taskNormalizer';
 
 // Runtime Health & Load State per Provider
 const inFlightCount: Record<string, number> = {};
@@ -451,12 +455,15 @@ function buildSingleProviderHeaders(provider: string, apiKey: string): Record<st
 }
 
 export const OFFICIAL_COMPLETE_WORDS_SPEC = {
-  headSentenceWords: '12-18 words (1 introductory head sentence, 100% intact)',
-  examMiddleWords: '22-28 words (1-2 middle sentences holding 10 blanks)',
-  coachMiddleWords: '55-65 words (1-2 middle sentences holding 25 blanks)',
-  tailSentenceWords: '12-18 words (1 concluding tail sentence, 100% intact)',
+  temperature: 0.5,
+  headSentenceWords: '15-20 words (1 introductory head sentence, 100% intact)',
+  examMiddleWords: '40-55 words (2 detailed middle sentences on the topic holding 10 blanks)',
+  coachMiddleWords: '120-150 words (4-5 detailed middle sentences on the exact topic holding 20-25 blanks)',
+  tailSentenceWords: '15-20 words (1 concluding tail sentence, 100% intact)',
   instruction:
-    'Write a concise academic paragraph consisting of: (1) ONE introductory head sentence (~12–18 words), (2) ONE or TWO middle sentences (~22–28 words total in Exam Mode; ~55–65 words in Coach Mode) that will hold the blanks, and (3) ONE concluding tail sentence (~12–18 words). Write 100% plain English with ZERO brackets [ ] or underscores.',
+    'Write a concise 75–95 word (4 sentences) plain-English academic paragraph consisting of: (1) ONE introductory head sentence (~15–20 words), (2) TWO middle sentences (~40–55 words total) on the topic that will hold the 10 blanks, and (3) ONE concluding tail sentence (~15–20 words). Write 100% plain English with ZERO brackets [ ] or underscores and flawless spelling.',
+  coachInstruction:
+    'Write a 160–200 word (6–7 sentences) plain-English academic article on the topic consisting of: (1) ONE intact introductory head sentence (~18–25 words), (2) FOUR to FIVE detailed middle sentences (~120–150 words total) on the exact topic that will hold 20–25 blanks, and (3) ONE concluding tail sentence (~18–25 words). Write 100% plain English with ZERO brackets [ ] or underscores and flawless spelling.',
 } as const;
 
 export const OFFICIAL_5_READING_QUESTION_TYPES = [
@@ -591,6 +598,7 @@ export async function callBackendGenerate(
         providerKeys: singleProviderMap,
         availableKeys: singleProviderMap,
         coachMode: isCoachMode,
+        ...(isCompleteWords ? { temperature: 0.5 } : {}),
         ...(optionsObj || {}),
       };
 
@@ -603,6 +611,7 @@ export async function callBackendGenerate(
           level,
           topic,
           coachMode: isCoachMode,
+          ...(isCompleteWords ? { temperature: 0.5 } : {}),
           promptData: enrichedPromptData,
           customApiKey: apiKey,
           provider,
@@ -630,8 +639,35 @@ export async function callBackendGenerate(
         throw err;
       }
       if (res.data) {
+        if (isCompleteWords) {
+          const rawPassage = String(res.data.passage || res.data.text || '').trim();
+          const minValidWords = isCoachMode ? 110 : 45;
+          const { validWords, gibberishCount } = countValidCompleteWordsTokens(rawPassage);
+          if (validWords < minValidWords || gibberishCount >= 2) {
+            const err: any = new Error(
+              `Provider ${provider} returned truncated or garbled complete_words passage (${validWords} valid words, ${gibberishCount} gibberish tokens)`
+            );
+            err.providerChainExhausted = true;
+            throw err;
+          }
+        }
+        const normalizedData = normalizeTaskData(res.data, taskType, { coachMode: isCoachMode });
+        if (isCompleteWords) {
+          const minBlanks = isCoachMode ? 18 : 8;
+          if (
+            isCorruptedCompleteWordsTask(normalizedData) ||
+            !Array.isArray(normalizedData.blanks) ||
+            normalizedData.blanks.length < minBlanks
+          ) {
+            const err: any = new Error(
+              `Provider ${provider} failed complete_words validation gate (${normalizedData.blanks?.length || 0} blanks)`
+            );
+            err.providerChainExhausted = true;
+            throw err;
+          }
+        }
         res.data = {
-          ...normalizeTaskData(res.data, taskType, { coachMode: isCoachMode }),
+          ...normalizedData,
           providerUsed: res.providerUsed || res.data.providerUsed || provider,
         };
       }

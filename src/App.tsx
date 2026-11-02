@@ -654,20 +654,24 @@ export default function App() {
     return () => window.removeEventListener('prefetchSettingChanged', handlePrefetchChange);
   }, []);
 
-  // Keyboard shortcut: 'N' for next task
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+  // Sync Keyboard Shortcuts Enabled setting from localStorage ('toefl_shortcuts_enabled', default true)
+  const [shortcutsEnabled, setShortcutsEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('toefl_shortcuts_enabled');
+    return saved === null ? true : saved !== 'false';
+  });
 
-      if (e.key === 'n' || e.key === 'N') {
-        e.preventDefault();
-        handleNextQuestion(currentTaskType);
-      }
+  useEffect(() => {
+    const handleShortcutsSettingChange = () => {
+      const saved = localStorage.getItem('toefl_shortcuts_enabled');
+      setShortcutsEnabled(saved === null ? true : saved !== 'false');
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentTaskType]);
+    window.addEventListener('toefl_shortcuts_setting_changed', handleShortcutsSettingChange);
+    window.addEventListener('storage', handleShortcutsSettingChange);
+    return () => {
+      window.removeEventListener('toefl_shortcuts_setting_changed', handleShortcutsSettingChange);
+      window.removeEventListener('storage', handleShortcutsSettingChange);
+    };
+  }, []);
 
   // Next item in curated pool (prioritizing unpracticed questions first)
   const handleNextCurated = (type: TaskTypeId) => {
@@ -1396,6 +1400,278 @@ export default function App() {
       setIsGenerating(false);
     }
   };
+
+  // Global modifier-only Keyboard Shortcuts (NEVER fires on bare single-letter, bare number, or bare Space keys)
+  useEffect(() => {
+    if (!shortcutsEnabled) return;
+
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (isDashboardOpen || isHistoryOpen || isRubricsOpen || isStatusModalOpen || Boolean(devEditorTask)) {
+        return;
+      }
+
+      const target = e.target as HTMLElement | null;
+      const tagName = target?.tagName || '';
+      const isTypingField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName) || Boolean(target?.isContentEditable);
+
+      const getWorkspaceButtons = (): HTMLButtonElement[] => {
+        const workspace = document.querySelector('[aria-label="Interactive Task Workspace"]');
+        if (!workspace) return [];
+        return Array.from(workspace.querySelectorAll('button')).filter(
+          (btn) => !btn.disabled && btn.offsetParent !== null
+        );
+      };
+
+      const keyLower = (e.key || '').toLowerCase();
+      const code = e.code || '';
+
+      // 1. Ctrl + Enter (or Cmd + Enter): Submit / Check Answers / Evaluate Response
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === 'Enter') {
+        if (currentTaskType === 'complete-words') {
+          // Handled inside CompleteWordsView
+          return;
+        }
+        const buttons = getWorkspaceButtons();
+        const submitBtn = buttons.find((btn) => {
+          const txt = (btn.textContent || '').trim().toLowerCase();
+          if (txt.includes('check current progress') || txt.includes('check item') || txt.includes('check this question')) {
+            return false;
+          }
+          return (
+            txt.includes('check answer') ||
+            txt.includes('submit') ||
+            txt.includes('evaluate') ||
+            txt.includes('instant local grader') ||
+            txt.includes('grade response') ||
+            txt.includes('finish')
+          );
+        });
+        if (submitBtn) {
+          e.preventDefault();
+          submitBtn.click();
+        }
+        return;
+      }
+
+      // 2. Enter (with no modifiers): Next word blank (Complete the Words), Next Item (multi-item MCQ when not typing in textarea), or Stop Recording & Transcribe (Speaking when actively recording)
+      if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        const buttons = getWorkspaceButtons();
+        const stopRecBtn = buttons.find((btn) => {
+          const txt = (btn.textContent || '').trim().toLowerCase();
+          return txt.includes('stop recording') || txt.includes('stop & transcribe') || txt.includes('finish recording');
+        });
+        if (stopRecBtn) {
+          e.preventDefault();
+          stopRecBtn.click();
+          return;
+        }
+
+        if (isTypingField) {
+          return;
+        }
+
+        if (currentTaskType === 'complete-words') {
+          const workspace = document.querySelector('[aria-label="Interactive Task Workspace"]');
+          const firstInput = workspace?.querySelector('input[type="text"]:not(:disabled)') as HTMLInputElement | null;
+          if (firstInput) {
+            e.preventDefault();
+            firstInput.focus();
+            return;
+          }
+        }
+
+        const nextItemBtn = buttons.find((btn) => {
+          const txt = (btn.textContent || '').trim().toLowerCase();
+          return (
+            txt.includes('next item') ||
+            txt.includes('next prompt') ||
+            txt.includes('next question') ||
+            txt.includes('next sentence') ||
+            txt.includes('next clip')
+          );
+        });
+        if (nextItemBtn) {
+          e.preventDefault();
+          nextItemBtn.click();
+        }
+        return;
+      }
+
+      // 3. Tab or Alt + H: Trigger Coach Hint (+1 Letter in Complete the Words, Place Next Tile in Build a Sentence, or toggle Coach Hint & Strategy in Reading/Listening)
+      const isAltH = e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (keyLower === 'h' || code === 'KeyH');
+      const isBareTab = e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey;
+      if (isAltH || (isBareTab && !isTypingField)) {
+        const buttons = getWorkspaceButtons();
+        const hintBtn = buttons.find((btn) => {
+          const txt = (btn.textContent || '').trim().toLowerCase();
+          return (
+            txt.includes('+1 letter') ||
+            txt.includes('place next tile') ||
+            txt.includes('coach hint') ||
+            txt.includes('pragmatic hint') ||
+            txt.includes('hide hint') ||
+            txt.includes('grammar coach') ||
+            txt.includes('strategy')
+          );
+        });
+        if (hintBtn) {
+          e.preventDefault();
+          hintBtn.click();
+          return;
+        }
+      }
+
+      // 4. Alt + N (or Ctrl + Shift + N): Next Question
+      const isNextQuestionShortcut =
+        (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (keyLower === 'n' || code === 'KeyN')) ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && (keyLower === 'n' || code === 'KeyN'));
+      if (isNextQuestionShortcut) {
+        e.preventDefault();
+        if (!isMockTest) {
+          handleNextQuestion(currentTaskType);
+        }
+        return;
+      }
+
+      // 5. Alt + G (or Ctrl + Shift + G): Generate New with AI
+      const isGenerateShortcut =
+        (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (keyLower === 'g' || code === 'KeyG')) ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && (keyLower === 'g' || code === 'KeyG'));
+      if (isGenerateShortcut) {
+        e.preventDefault();
+        if (!isMockTest && !isGenerating) {
+          handleGenerateNewAiTask();
+        }
+        return;
+      }
+
+      // 6. Alt + R (or Ctrl + Shift + R): Retry / Reset Current Question
+      const isRetryShortcut =
+        (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (keyLower === 'r' || code === 'KeyR')) ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && (keyLower === 'r' || code === 'KeyR'));
+      if (isRetryShortcut) {
+        e.preventDefault();
+        if (!isMockTest) {
+          setTaskResetNonce((n) => n + 1);
+        }
+        return;
+      }
+
+      // 7. Alt + M: Toggle Mode between Official Exam Mode and Coach & Marathon Mode
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (keyLower === 'm' || code === 'KeyM')) {
+        e.preventDefault();
+        setIsMockTest(false);
+        setPracticeMode((prev) => (prev === 'exam' ? 'coach' : 'exam'));
+        return;
+      }
+
+      // 8. Alt + 1, Alt + 2, Alt + 3, Alt + 4 (or Alt + A, Alt + B, Alt + C, Alt + D): Select Multiple-Choice Option A (0), B (1), C (2), or D (3)
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        let optionIdx = -1;
+        if (keyLower === '1' || code === 'Digit1' || keyLower === 'a' || code === 'KeyA') optionIdx = 0;
+        else if (keyLower === '2' || code === 'Digit2' || keyLower === 'b' || code === 'KeyB') optionIdx = 1;
+        else if (keyLower === '3' || code === 'Digit3' || keyLower === 'c' || code === 'KeyC') optionIdx = 2;
+        else if (keyLower === '4' || code === 'Digit4' || keyLower === 'd' || code === 'KeyD') optionIdx = 3;
+
+        if (optionIdx !== -1) {
+          const workspace = document.querySelector('[aria-label="Interactive Task Workspace"]');
+          if (workspace) {
+            const radios = Array.from(
+              workspace.querySelectorAll('input[type="radio"]:not(:disabled)')
+            ) as HTMLInputElement[];
+            if (radios.length > 0) {
+              e.preventDefault();
+              // Group radio inputs by name attribute
+              const groups = new Map<string, HTMLInputElement[]>();
+              radios.forEach((r, idx) => {
+                const groupKey = r.name || `group-${Math.floor(idx / 4)}`;
+                if (!groups.has(groupKey)) groups.set(groupKey, []);
+                groups.get(groupKey)!.push(r);
+              });
+              const groupList = Array.from(groups.values());
+              // Prefer the group containing activeElement, or the first unanswered group, or the first group
+              const activeEl = document.activeElement;
+              let targetGroup =
+                groupList.find((g) => g.some((r) => r === activeEl || r.closest('label') === activeEl)) ||
+                groupList.find((g) => !g.some((r) => r.checked)) ||
+                groupList[0];
+
+              if (targetGroup && targetGroup[optionIdx]) {
+                const targetRadio = targetGroup[optionIdx];
+                const parentLabel = targetRadio.closest('label');
+                if (parentLabel) {
+                  parentLabel.click();
+                } else {
+                  targetRadio.click();
+                }
+                targetRadio.focus({ preventScroll: true });
+              }
+              return;
+            }
+          }
+        }
+      }
+
+      // 9. Alt + P (or Ctrl + Space): Play / Replay Audio in Listening and Speaking
+      const isPlayAudioShortcut =
+        (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (keyLower === 'p' || code === 'KeyP')) ||
+        ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === ' ' || code === 'Space'));
+      if (isPlayAudioShortcut) {
+        const buttons = getWorkspaceButtons();
+        const playBtn = buttons.find((btn) => {
+          const txt = (btn.textContent || '').trim().toLowerCase();
+          return (
+            txt.includes('play') ||
+            txt.includes('replay') ||
+            txt.includes('listen') ||
+            txt.includes('stop audio')
+          );
+        });
+        if (playBtn) {
+          e.preventDefault();
+          playBtn.click();
+        }
+        return;
+      }
+
+      // 10. Alt + S: Show / Hide Script or Questions in Listening and Speaking
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (keyLower === 's' || code === 'KeyS')) {
+        const buttons = getWorkspaceButtons();
+        const scriptBtn = buttons.find((btn) => {
+          const txt = (btn.textContent || '').trim().toLowerCase();
+          return (
+            txt.includes('script') ||
+            txt.includes('transcript') ||
+            txt.includes('prompt text') ||
+            txt.includes('show questions') ||
+            txt.includes('hide questions') ||
+            txt.includes('reveal')
+          );
+        });
+        if (scriptBtn) {
+          e.preventDefault();
+          scriptBtn.click();
+        }
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [
+    shortcutsEnabled,
+    currentTaskType,
+    isMockTest,
+    isGenerating,
+    isDashboardOpen,
+    isHistoryOpen,
+    isRubricsOpen,
+    isStatusModalOpen,
+    devEditorTask,
+    practiceMode,
+    level,
+    topic,
+  ]);
 
   // Resolve current active task data (hide questions with reportCount >= 3)
   const activeTask = React.useMemo(() => {

@@ -249,7 +249,8 @@ export const CompleteWordsView: React.FC<Props> = ({ task, onNextTask, onComplet
   // Keyboard shortcut Ctrl+Enter or Cmd+Enter to submit anywhere
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      if (localStorage.getItem('toefl_shortcuts_enabled') === 'false') return;
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === 'Enter') {
         e.preventDefault();
         if (!checked) {
           handleCheck();
@@ -282,14 +283,16 @@ export const CompleteWordsView: React.FC<Props> = ({ task, onNextTask, onComplet
   };
 
   const handleKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    const shortcutsOn = localStorage.getItem('toefl_shortcuts_enabled') !== 'false';
+
     // Ctrl + Enter (or Cmd + Enter) submits the answers
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    if (shortcutsOn && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === 'Enter') {
       e.preventDefault();
       handleCheck();
       return;
     }
 
-    if (coachMode && e.key === 'Tab' && !e.shiftKey) {
+    if (shortcutsOn && coachMode && e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       const b = blanks[index];
       if (b && !isAcceptedCTestAnswer(b.prefix, b.userValue, b.solution)) {
         e.preventDefault();
@@ -299,7 +302,7 @@ export const CompleteWordsView: React.FC<Props> = ({ task, onNextTask, onComplet
     }
 
     // Pressing Enter advances to the next answer dash
-    if (e.key === 'Enter') {
+    if (shortcutsOn && e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       const nextIndex = (index + 1) % blanks.length;
       inputRefs.current[nextIndex]?.focus();

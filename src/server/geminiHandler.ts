@@ -31,6 +31,8 @@ import {
   normalizeListeningAcademicTalkTask,
   normalizeListeningDialogueTask,
   canonicalizeTaskType,
+  countValidCompleteWordsTokens,
+  isCorruptedCompleteWordsTask,
 } from '../utils/taskNormalizer';
 import { COACH_CURATED_BANK } from '../utils/coachCuratedBank';
 
@@ -398,8 +400,13 @@ function normalizeCompleteWords(data: any) {
   const title = String(data.title || 'Complete the Words').trim();
   if (!title) throw new Error('Complete the Words missing title');
   const rawText = String(data.passage || data.text || '').trim();
-  if (!rawText || rawText.split(/\s+/).filter(Boolean).length < 25) {
-    throw new Error('AI response missing valid complete_words paragraph passage');
+  const isCoach = Boolean(data.coachMode);
+  const minValidWords = isCoach ? 110 : 45;
+  const { validWords, gibberishCount } = countValidCompleteWordsTokens(rawText);
+  if (!rawText || validWords < minValidWords || gibberishCount >= 2) {
+    throw new Error(
+      `AI response complete_words passage failed word/gibberish validation (${validWords} valid words, required >= ${minValidWords}, gibberish: ${gibberishCount})`
+    );
   }
 
   const normalized = normalizeCompleteWordsTask({
@@ -407,8 +414,18 @@ function normalizeCompleteWords(data: any) {
     passage: rawText,
     text: rawText,
     totalBlanks: data.totalBlanks,
-    coachMode: Boolean(data.coachMode),
+    coachMode: isCoach,
   });
+  const minBlanks = isCoach ? 18 : 8;
+  if (
+    !Array.isArray(normalized.blanks) ||
+    normalized.blanks.length < minBlanks ||
+    isCorruptedCompleteWordsTask(normalized)
+  ) {
+    throw new Error(
+      `AI response complete_words failed blank validation gate (${normalized.blanks?.length || 0} blanks, required >= ${minBlanks})`
+    );
+  }
   return {
     title: normalized.title,
     passage: normalized.passage,
@@ -996,13 +1013,13 @@ export async function handleGenerateTask(taskType: string, level: string, topic:
         if (isCoachMode) {
           return `You are an official ETS 2026 TOEFL iBT Coach & Marathon test creator. Create a Marathon "Complete the Words" (C-Test) passage for level: ${levelDesc}. Topic: ${top}.
 COACH & MARATHON SPECIFICATIONS:
-Write a concise academic paragraph consisting of: (1) ONE introductory head sentence (~12–18 words), (2) ONE or TWO middle sentences (~55–65 words total) that will hold the blanks, and (3) ONE concluding tail sentence (~12–18 words). Write 100% plain English with ZERO brackets [ ] or underscores.
-Return ONLY this exact JSON schema: {"title": "Academic Topic Title", "passage": "A 100% plain-English academic paragraph with ZERO brackets [ ] and flawless spelling."}`;
+Write a 160–200 word (6–7 sentences) plain-English academic article on the topic consisting of: (1) ONE intact introductory head sentence (~18–25 words), (2) FOUR to FIVE detailed middle sentences (~120–150 words total) exploring the exact topic in depth that will hold 20–25 blanks, and (3) ONE concluding tail sentence (~18–25 words). Write 100% plain English with ZERO brackets [ ] or underscores and flawless spelling. Never output abbreviated or truncated word fragments.
+Return ONLY this exact JSON schema: {"title": "Academic Topic Title", "passage": "A 160-200 word (6-7 sentences) 100% plain-English academic article on the topic with ZERO brackets [ ] and flawless spelling."}`;
         }
         return `You are an official ETS 2026 TOEFL iBT test content creator. Create an authentic TOEFL Reading "Complete the Words" (C-Test) passage for level: ${levelDesc}. Topic: ${top}.
 STRICT 2026 TOEFL iBT SPECIFICATIONS:
-Write a concise academic paragraph consisting of: (1) ONE introductory head sentence (~12–18 words), (2) ONE or TWO middle sentences (~22–28 words total) that will hold the blanks, and (3) ONE concluding tail sentence (~12–18 words). Write 100% plain English with ZERO brackets [ ] or underscores.
-Return ONLY this exact JSON schema: {"title": "Academic Topic Title", "passage": "A 100% plain-English academic paragraph with ZERO brackets [ ] and flawless spelling."}`;
+Write a concise 75–95 word (4 sentences) plain-English academic paragraph consisting of: (1) ONE introductory head sentence (~15–20 words), (2) TWO detailed middle sentences (~40–55 words total) on the topic that will hold the 10 blanks, and (3) ONE concluding tail sentence (~15–20 words). Write 100% plain English with ZERO brackets [ ] or underscores and flawless spelling. Never output abbreviated or truncated word fragments.
+Return ONLY this exact JSON schema: {"title": "Academic Topic Title", "passage": "A 75-95 word (4 sentences) 100% plain-English academic paragraph with ZERO brackets [ ] and flawless spelling."}`;
       case 'daily-life':
       case 'daily_life':
         if (isCoachMode) {
@@ -1261,6 +1278,8 @@ Return JSON format: {"title": "Academic Discussion Board", "professorName": "Pro
   const prompt = getPrompt(taskType, level, topic);
   const systemInstruction = 'You are an expert ETS TOEFL test design specialist. Write natural, authentic ETS TOEFL prose. Avoid repetitive phrasing, redundant concluding summaries, or artificial buzzword stuffing. Return valid JSON matching the schema only.';
   const fullPrompt = `${systemInstruction}\n\n${prompt}\n\nIMPORTANT: Return valid JSON matching the schema only. Do not wrap in markdown fences.`;
+  const generationTemperature =
+    taskType === 'complete-words' || taskType === 'complete_words' ? 0.5 : 0.7;
 
   // Collect available providers and distribute via round-robin for question generation (high throughput)
   const candidates = collectAvailableProviders(options);
@@ -1284,7 +1303,7 @@ Return JSON format: {"title": "Academic Discussion Board", "professorName": "Pro
               contents: fullPrompt,
               config: {
                 responseMimeType: 'application/json',
-                temperature: 0.7,
+                temperature: generationTemperature,
               },
             });
           } catch (firstErr: any) {
@@ -1296,7 +1315,7 @@ Return JSON format: {"title": "Academic Discussion Board", "professorName": "Pro
               model,
               contents: fullPrompt,
               config: {
-                temperature: 0.7,
+                temperature: generationTemperature,
               },
             });
           }
@@ -1341,6 +1360,7 @@ Return JSON format: {"title": "Academic Discussion Board", "professorName": "Pro
               purpose: 'generation',
               prompt: fullPrompt,
               systemInstruction,
+              temperature: generationTemperature,
               responseJson: true,
             });
 
