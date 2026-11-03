@@ -49,8 +49,6 @@ import {
   RotateCcw,
   CheckCircle2,
   AlertCircle,
-  Sun,
-  Moon,
   X,
   Volume2,
   Database,
@@ -545,14 +543,6 @@ export default function App() {
     };
   }, []);
 
-  // Dark Mode
-  const [darkMode, setDarkMode] = useState<boolean>(() => {
-    return localStorage.getItem('toefl_dark_mode') === 'true';
-  });
-
-  useEffect(() => {
-    localStorage.setItem('toefl_dark_mode', darkMode ? 'true' : 'false');
-  }, [darkMode]);
 
 
 
@@ -1820,7 +1810,7 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen font-sans antialiased selection:bg-teal-200 selection:text-teal-950 flex flex-col motion-reduce:transition-none ${darkMode ? 'dark bg-slate-950 text-slate-100' : 'bg-[#fafaf8] text-slate-900'}`}>
+    <div className="min-h-screen font-sans antialiased selection:bg-teal-200 selection:text-teal-950 flex flex-col motion-reduce:transition-none bg-[#fafaf8] text-slate-900">
       {/* Top Bar Contract: 3 Zones (Wordmark - 4 Nav Links - 1 Action CTA) */}
       <header className="border-b border-slate-200 bg-white/95 backdrop-blur-xs sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
@@ -1897,7 +1887,7 @@ export default function App() {
             </button>
           </nav>
 
-          {/* Zone 3: Right actions (Dev Admin Badge, Score History, Dashboard, System Status, Theme Toggle) */}
+          {/* Zone 3: Right actions (Dev Admin Badge, Score History, Dashboard, System Status) */}
           <div className="flex items-center gap-2.5 shrink-0">
             {isDevAdmin && (
               <button
@@ -1937,13 +1927,6 @@ export default function App() {
               className="p-2 rounded-lg text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
             >
               <Activity className="w-4 h-4 text-teal-700" />
-            </button>
-            <button
-              onClick={() => setDarkMode(prev => !prev)}
-              aria-label="Toggle Dark Mode"
-              className="p-2 rounded-lg text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
-            >
-              {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
             </button>
           </div>
         </div>
